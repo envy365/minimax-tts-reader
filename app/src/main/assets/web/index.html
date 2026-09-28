@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MiniMax TTS Reader</title>
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        /* 日志页样式（LLM 预处理日志） */
+        .llm-log-item { border: 1px solid var(--divider); border-radius: var(--radius-md); margin-bottom: 8px; background: var(--bg-elevated); overflow: hidden; }
+        .llm-log-head { padding: 10px 12px; cursor: pointer; }
+        .llm-log-line { font-size: 12px; color: var(--text-secondary); line-height: 1.6; word-break: break-all; }
+        .llm-log-time { font-family: monospace; }
+        .llm-log-status { float: right; font-size: 11px; font-weight: 600; margin-left: 8px; }
+        .llm-log-status.ok { color: var(--success); }
+        .llm-log-status.warn { color: var(--warning); }
+        .llm-log-status.err { color: var(--danger); }
+        .llm-log-preview { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; word-break: break-all; }
+        .llm-log-detail { border-top: 1px solid var(--divider); padding: 10px 12px; }
+        .llm-log-detail-title { font-size: 11px; font-weight: 600; color: var(--text-tertiary); margin-bottom: 4px; }
+        .llm-log-pre { font-size: 12px; color: var(--text-secondary); white-space: pre-wrap; word-break: break-all; background: var(--bg-grouped); border-radius: var(--radius-sm); padding: 8px; margin: 0 0 8px; font-family: monospace; }
+        .llm-log-pre:last-child { margin-bottom: 0; }
+        .llm-log-error { color: var(--danger); }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>MiniMax TTS Reader</h1>
+            <div class="status-badge" id="statusBadge">
+                <span class="status-dot"></span>
+                <span class="status-text">已停止</span>
+            </div>
+        </header>
+
+        <!-- 页面一：运行 -->
+        <main class="page-content" id="pageRuntime">
+            <section class="card service-control">
+                <h2>服务控制</h2>
+                <div class="service-info">
+                    <div class="info-row"><span class="label">服务地址</span><span class="value" id="serverUrl">-</span></div>
+                    <div class="info-row"><span class="label">运行状态</span><span class="value" id="serviceStatus">未启动</span></div>
+                    <div class="info-row"><span class="label">当前配置</span><span class="value" id="activeConfigDisplay">-</span></div>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-primary" id="btnStart" onclick="startService()">启动服务</button>
+                    <button class="btn btn-danger" id="btnStop" onclick="stopService()" disabled>停止服务</button>
+                    <button class="btn btn-secondary" id="btnRestart" onclick="restartService()" disabled>重启服务</button>
+                </div>
+            </section>
+
+            <section class="card config-selector-card">
+                <div class="config-selector-row">
+                    <select id="runtimeConfigSelect" onchange="onRuntimeConfigSelectChange()"></select>
+                </div>
+            </section>
+
+            <section class="card test-section">
+                <h2>语音测试</h2>
+                <div class="form-group">
+                    <label for="testText">测试文本</label>
+                    <textarea id="testText" rows="3">落魄谷中寒风吹，春秋蝉鸣少年归。</textarea>
+                    <div class="test-prompt-bar">
+                        <select id="testPromptSelect" onchange="onTestPromptSelect()"></select>
+                        <button class="btn btn-secondary" onclick="randomTestPrompt()">换一个</button>
+                    </div>
+                </div>
+                <button class="btn btn-primary btn-block" id="btnTest" onclick="testTts()">测试合成</button>
+                <div class="audio-player" id="audioPlayerContainer" style="display:none;">
+                    <audio id="audioPlayer" controls></audio>
+                </div>
+            </section>
+
+            <section class="card log-section">
+                <h2>运行日志</h2>
+                <div class="log-container" id="logContainer"><div class="log-empty">暂无日志</div></div>
+                <button class="btn btn-secondary btn-block" onclick="clearLogs()" style="margin-top:8px;">清空日志</button>
+            </section>
+
+            <section class="card">
+                <h2>系统设置</h2>
+                <button class="btn btn-secondary btn-block" onclick="requestBatteryOptimization()">忽略电池优化</button>
+                <small class="hint">防止服务被系统杀掉</small>
+            </section>
+        </main>
+
+        <!-- 页面二：配置 -->
+        <main class="page-content" id="pageConfig" style="display:none;">
+            <!-- 配置选择栏 -->
+            <section class="card config-selector-card">
+                <div class="config-selector-row">
+                    <select id="configSelect" onchange="onConfigSelectChange()"></select>
+                    <button class="btn btn-accent" onclick="showNewConfigModal()">新建</button>
+                </div>
+            </section>
+
+            <!-- 基础配置 -->
+            <section class="card config-section">
+                <h2>基础配置</h2>
+                <div class="form-group">
+                    <label for="modelSelect">模型</label>
+                    <select id="modelSelect"></select>
+                </div>
+                <div class="form-group">
+                    <label for="voiceSelect">音色</label>
+                    <select id="voiceSelect" onchange="hideVoiceWarning()"></select>
+                    <small class="hint">有声书音色最适合听书</small>
+                    <small class="voice-warning" id="voiceWarning" style="display:none;color:var(--danger);font-size:12px;margin-top:6px;font-weight:500;line-height:1.5;word-break:break-all;"></small>
+                </div>
+
+                <div class="form-group">
+                    <label for="speed">语速</label>
+                    <div class="slider-group">
+                        <button class="slider-btn" data-target="speed" data-dir="-1">−</button>
+                        <input type="range" id="speed" min="0.5" max="2" step="0.1" value="1.0" oninput="onRangeInput('speed')">
+                        <button class="slider-btn" data-target="speed" data-dir="1">+</button>
+                        <input type="text" class="slider-val" id="speedVal" value="1.0" oninput="onSliderInput('speed')" onblur="onSliderInputBlur('speed')" onkeydown="if(event.key==='Enter')this.blur()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="vol">音量</label>
+                    <div class="slider-group">
+                        <button class="slider-btn" data-target="vol" data-dir="-1">−</button>
+                        <input type="range" id="vol" min="0.1" max="10" step="0.1" value="1.0" oninput="onRangeInput('vol')">
+                        <button class="slider-btn" data-target="vol" data-dir="1">+</button>
+                        <input type="text" class="slider-val" id="volVal" value="1.0" oninput="onSliderInput('vol')" onblur="onSliderInputBlur('vol')" onkeydown="if(event.key==='Enter')this.blur()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="pitch">语调</label>
+                    <div class="slider-group">
+                        <button class="slider-btn" data-target="pitch" data-dir="-1">−</button>
+                        <input type="range" id="pitch" min="-12" max="12" step="1" value="0" oninput="onRangeInput('pitch')">
+                        <button class="slider-btn" data-target="pitch" data-dir="1">+</button>
+                        <input type="text" class="slider-val" id="pitchVal" value="0" oninput="onSliderInput('pitch')" onblur="onSliderInputBlur('pitch')" onkeydown="if(event.key==='Enter')this.blur()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="emotionSelect">情感</label>
+                    <select id="emotionSelect"></select>
+                </div>
+                <div class="form-group">
+                    <label><input type="checkbox" id="textNormalization"> 文本规范化（数字正确读法，略微增加延迟）</label>
+                </div>
+                <div class="form-group">
+                    <label for="languageBoostSelect">语言优化</label>
+                    <select id="languageBoostSelect"></select>
+                </div>
+                <div class="form-group">
+                    <label for="serverPort">服务端口</label>
+                    <input type="number" id="serverPort" value="9966" min="1024" max="65535">
+                </div>
+            </section>
+
+            <!-- LLM 文本预处理已移至独立页面 -->
+
+            <!-- 高级声音参数 -->
+            <section class="card advanced-section">
+                <h2>高级声音参数</h2>
+                <div class="advanced-content" id="advancedContent">
+                    <p class="hint section-hint">voice_modify 声音效果器（固定 wav 输出，非流式合成下生效）</p>
+                    <div class="form-group">
+                        <label for="vmPitch">音高</label>
+                        <div class="slider-group">
+                            <button class="slider-btn" data-target="vmPitch" data-dir="-1">−</button>
+                            <input type="range" id="vmPitch" min="-100" max="100" step="1" value="0" oninput="onRangeInput('vmPitch')">
+                            <button class="slider-btn" data-target="vmPitch" data-dir="1">+</button>
+                            <input type="text" class="slider-val" id="vmPitchVal" value="0" oninput="onSliderInput('vmPitch')" onblur="onSliderInputBlur('vmPitch')" onkeydown="if(event.key==='Enter')this.blur()">
+                        </div>
+                        <small class="hint">-100更低沉 / 100更明亮</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="vmIntensity">强度</label>
+                        <div class="slider-group">
+                            <button class="slider-btn" data-target="vmIntensity" data-dir="-1">−</button>
+                            <input type="range" id="vmIntensity" min="-100" max="100" step="1" value="0" oninput="onRangeInput('vmIntensity')">
+                            <button class="slider-btn" data-target="vmIntensity" data-dir="1">+</button>
+                            <input type="text" class="slider-val" id="vmIntensityVal" value="0" oninput="onSliderInput('vmIntensity')" onblur="onSliderInputBlur('vmIntensity')" onkeydown="if(event.key==='Enter')this.blur()">
+                        </div>
+                        <small class="hint">-100更刚劲 / 100更轻柔</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="vmTimbre">音色</label>
+                        <div class="slider-group">
+                            <button class="slider-btn" data-target="vmTimbre" data-dir="-1">−</button>
+                            <input type="range" id="vmTimbre" min="-100" max="100" step="1" value="0" oninput="onRangeInput('vmTimbre')">
+                            <button class="slider-btn" data-target="vmTimbre" data-dir="1">+</button>
+                            <input type="text" class="slider-val" id="vmTimbreVal" value="0" oninput="onSliderInput('vmTimbre')" onblur="onSliderInputBlur('vmTimbre')" onkeydown="if(event.key==='Enter')this.blur()">
+                        </div>
+                        <small class="hint">-100更浑厚 / 100更清脆</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="soundEffectsSelect">音效</label>
+                        <select id="soundEffectsSelect"></select>
+                    </div>
+                    <hr class="divider">
+                    <p class="hint section-hint">audio_setting 音频输出</p>
+                    <div class="form-group">
+                        <label for="sampleRateSelect">采样率</label>
+                        <select id="sampleRateSelect"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="channelSelect">声道</label>
+                        <select id="channelSelect"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="pronunciationDict">发音字典（可选）</label>
+                        <textarea id="pronunciationDict" rows="2" placeholder="逗号分隔，如 燕少飞/(yan4)(shao3)(fei1),omg/oh my god"></textarea>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- 页面三：账户 -->
+        <main class="page-content" id="pageAccount" style="display:none;">
+            <section class="card account-section">
+                <h2>账户凭证</h2>
+                <div class="form-group">
+                    <label for="apiKey">MiniMax API Key <span class="required">*</span></label>
+                    <div class="input-with-btn">
+                        <input type="password" id="apiKey" placeholder="MiniMax 开放平台获取">
+                        <button class="btn-icon" onclick="toggleApiKeyVisibility()"><span id="eyeIcon">👁</span></button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="groupId">GroupId <span class="required">*</span></label>
+                    <input type="text" id="groupId" placeholder="国内版必需，账户管理中查看">
+                    <small class="hint">国内版接口需 GroupId 拼接在 URL 末尾</small>
+                </div>
+                <div class="form-group">
+                    <button class="btn btn-secondary btn-block" id="btnTestConnection" onclick="testConnection()">测试连接</button>
+                    <small class="hint" id="connectionResult">读取当前填写并跑一次最小 TTS（启用 LLM 时一并测 LLM）</small>
+                </div>
+                <button class="btn btn-primary btn-block" onclick="saveAccount()">保存</button>
+            </section>
+
+            <section class="card legado-section">
+                <h2>阅读 APP (Legado) 集成</h2>
+                <p class="hint">只需要转发一次，除「并发数」外其余选项在本软件调整。</p>
+                <div class="rule-display"><pre id="legadoRule">-</pre></div>
+                <div class="button-group">
+                    <button class="btn btn-accent" onclick="copyLegadoRule()">复制规则</button>
+                    <button class="btn btn-accent" onclick="importToLegado()">一键导入阅读APP</button>
+                </div>
+                <small class="hint" style="display:block;margin-top:10px;">并发数：阅读APP同时发起的语音合成请求数量。数值越大，预缓冲的语音段落越多，可吸收 LLM 预处理延迟，但也会增加瞬时 API 调用并发量。可在阅读APP的朗读引擎设置中调整。</small>
+            </section>
+        </main>
+
+        <!-- 页面四：LLM 预处理 -->
+        <main class="page-content" id="pageLlm" style="display:none;">
+            <section class="card">
+                <h2>LLM 文本预处理</h2>
+                <p class="hint section-hint">在 TTS 合成前调用 MiniMax LLM 净化文本：删除 Markdown 符号、表情、动作括注，合并连续标点等。需额外计入 token 成本。设置全局生效，不随配置切换。</p>
+                <div class="form-group">
+                    <button class="btn btn-secondary btn-block" id="btnLlmToggle" onclick="toggleLlmEnabled()">启用预处理</button>
+                </div>
+                <div class="form-group">
+                    <label for="llmModelSelect">LLM 模型</label>
+                    <select id="llmModelSelect"></select>
+                    <small class="hint">高速版成本低，适合短文本净化</small>
+                </div>
+                <div class="form-group">
+                    <label for="llmThinkingSelect">LLM 思考模式</label>
+                    <select id="llmThinkingSelect">
+                        <option value="disabled">关闭思考（disabled）</option>
+                        <option value="enabled">开启思考（adaptive）</option>
+                        <option value="">默认（不设置）</option>
+                    </select>
+                    <small class="hint">仅 MiniMax-M3 生效；M2.x 及以下模型不支持关闭思考</small>
+                </div>
+                <div class="form-group">
+                    <label for="llmPrompt">自定义 Prompt（空则用默认净化规则）</label>
+                    <textarea id="llmPrompt" rows="6" placeholder="留空将使用默认净化 prompt；可自行调整符号/语气处理细节"></textarea>
+                    <div class="button-group" style="margin-top:6px;">
+                        <button class="btn btn-secondary" onclick="fillDefaultPrompt()">填入高级prompt（2.8）</button>
+                        <button class="btn btn-secondary" onclick="fillBasicPrompt()">填入基础prompt（2.8以下）</button>
+                        <button class="btn btn-secondary" onclick="clearPrompt()">清空</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="llmMaxTokens">LLM max_tokens</label>
+                    <div class="slider-group">
+                        <button class="slider-btn" data-target="llmMaxTokens" data-dir="-1">−</button>
+                        <input type="range" id="llmMaxTokens" min="256" max="8192" step="256" value="2048" oninput="onRangeInput('llmMaxTokens')">
+                        <button class="slider-btn" data-target="llmMaxTokens" data-dir="1">+</button>
+                        <input type="text" class="slider-val" id="llmMaxTokensVal" value="2048" oninput="onSliderInput('llmMaxTokens')" onblur="onSliderInputBlur('llmMaxTokens')" onkeydown="if(event.key==='Enter')this.blur()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="llmTemperature">LLM temperature</label>
+                    <div class="slider-group">
+                        <button class="slider-btn" data-target="llmTemperature" data-dir="-1">−</button>
+                        <input type="range" id="llmTemperature" min="0" max="1" step="0.1" value="0.1" oninput="onRangeInput('llmTemperature')">
+                        <button class="slider-btn" data-target="llmTemperature" data-dir="1">+</button>
+                        <input type="text" class="slider-val" id="llmTemperatureVal" value="0.1" oninput="onSliderInput('llmTemperature')" onblur="onSliderInputBlur('llmTemperature')" onkeydown="if(event.key==='Enter')this.blur()">
+                    </div>
+                </div>
+                <button class="btn btn-primary btn-block" onclick="saveLlmSettings()">保存</button>
+            </section>
+        </main>
+
+        <!-- 页面五：日志 -->
+        <main class="page-content" id="pageLogs" style="display:none;">
+            <section class="card">
+                <h2>LLM 预处理日志</h2>
+                <p class="hint section-hint">记录每次 LLM 预处理请求的模型、耗时、输出与思考内容，自动保留最近 7 天。</p>
+                <div class="config-selector-row">
+                    <select id="llmLogDateSelect" onchange="loadLlmLogs()">
+                        <option value="">暂无日志</option>
+                    </select>
+                    <button class="btn btn-secondary" onclick="loadLlmLogDates()">刷新</button>
+                </div>
+                <div class="llm-log-list" id="llmLogList" style="margin-top:12px;">
+                    <div class="log-empty">暂无日志</div>
+                </div>
+            </section>
+        </main>
+
+        <!-- 配置页底部操作栏 -->
+        <div class="config-action-bar" id="configActionBar" style="display:none;">
+            <button class="btn btn-primary" id="btnSaveConfig" onclick="onSaveConfig()">保存</button>
+            <button class="btn btn-danger" id="btnDeleteConfig" onclick="onDeleteConfig()">删除</button>
+        </div>
+
+        <!-- 底部 Tab 栏 -->
+        <nav class="tab-bar">
+            <div class="tab-item active" data-page="runtime" onclick="switchPage('runtime')">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                <span>运行</span>
+            </div>
+            <div class="tab-item" data-page="config" onclick="switchPage('config')">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                <span>配置</span>
+            </div>
+            <div class="tab-item" data-page="account" onclick="switchPage('account')">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                <span>账户</span>
+            </div>
+            <div class="tab-item" data-page="llm" onclick="switchPage('llm')">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
+                <span>LLM</span>
+            </div>
+            <div class="tab-item" data-page="logs" onclick="switchPage('logs')">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>
+                <span>日志</span>
+            </div>
+        </nav>
+
+        <!-- 新建配置 Modal -->
+        <div class="modal-overlay" id="newConfigModal" style="display:none;">
+            <div class="modal-card">
+                <h3>新建配置</h3>
+                <input type="text" id="newConfigName" placeholder="输入配置名称" onkeydown="if(event.key==='Enter')confirmNewConfig()">
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" onclick="hideNewConfigModal()">取消</button>
+                    <button class="btn btn-primary" onclick="confirmNewConfig()">确定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="js/app.js"></script>
+</body>
+</html>

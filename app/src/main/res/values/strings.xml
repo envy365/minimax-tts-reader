@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MiniMax TTS Reader</string>
+    <string name="channel_name">MiniMax TTS Service</string>
+    <string name="channel_description">TTS service running status</string>
+</resources>
