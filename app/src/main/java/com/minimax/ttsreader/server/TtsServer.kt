@@ -53,7 +53,14 @@ class TtsServer(
                 "loginUi" to "",
                 "loginUrl" to "",
                 "name" to "MiniMax-TTS",
-                "url" to "http://localhost:$port/api/reader/tts?text={{java.encodeURI(speakText)}}"
+                // v0.7.x：URL 模板加 currentToneID / currentEmotionTag / currentSpeakerName 占位
+                // 老 Legado（v3.25 及更早）没有这些变量 → 模板引擎对 undefined 用空字符串 → 服务端 .isNotBlank() 过滤 → 沿用全局 voice
+                // Reading Archive 多角色模式启用时 → 占位替换为 per-segment voice_id → 实现多角色朗读
+                "url" to "http://localhost:$port/api/reader/tts" +
+                    "?text={{java.encodeURI(speakText)}}" +
+                    "&voice={{currentToneID || ''}}" +
+                    "&emotion={{currentEmotionTag || ''}}" +
+                    "&speaker={{currentSpeakerName || ''}}"
             )
             // 关键修复：返回数组 [{...}] 而非单对象
             return Gson().toJson(listOf(rule))
@@ -145,12 +152,24 @@ class TtsServer(
             return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "缺少 text 参数")
         }
 
-        Log.i(TAG, "[#$requestId] Reader TTS: text='${text.take(50)}...', speed=${config.speed}, voice=${config.voice}, llm=${config.llmEnabled}")
+        // v0.7.x：per-request 覆盖字段（多角色朗读支持）
+        // Reading Archive 在多角色模式下会带 voice / emotion / speaker 三参；老 Legado 不带或带 "{{x }}" 字面字符串
+        // 缺失或字面未替换 → 沿用 config 默认值
+        val overrideVoice = params["voice"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
+        val overrideEmotion = params["emotion"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
+        val speakerName = params["speaker"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
+
+        val effectiveConfig = config.copy(
+            voice = overrideVoice ?: config.voice,
+            emotion = overrideEmotion ?: config.emotion
+        )
+
+        Log.i(TAG, "[#$requestId] Reader TTS: text='${text.take(50)}...', voice=${effectiveConfig.voice}, speaker=$speakerName, emotion=${effectiveConfig.emotion}, llm=${config.llmEnabled}")
 
         return try {
-            val finalText = runBlocking { TextPreprocessor.preprocess(text, config) }
+            val finalText = runBlocking { TextPreprocessor.preprocess(text, effectiveConfig) }
             val result = runBlocking {
-                ttsClient.synthesize(config.apiKey, config.groupId, finalText, config)
+                ttsClient.synthesize(config.apiKey, config.groupId, finalText, effectiveConfig)
             }
             // 决策 5：WAV 头观察日志，只观察不改数据
             logWavObservation(requestId, result.audio, result.extraInfo)
