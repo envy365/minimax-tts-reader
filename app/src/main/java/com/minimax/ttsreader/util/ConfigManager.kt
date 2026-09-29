@@ -27,6 +27,9 @@ object ConfigManager {
     private const val KEY_CACHE_MAX_ENTRIES = "global_cache_max_entries"
     private const val KEY_CACHE_TTL_DAYS = "global_cache_ttl_days"
 
+    // ===== 全局响度处理（v0.6.x，针对 MiniMax 后端 RMS 不归一化）=====
+    private const val KEY_NORMALIZE_MODE = "global_normalize_mode"  // off / rms / drc
+
     const val DEFAULT_CONFIG_NAME = "默认配置"
 
     private val gson = Gson()
@@ -201,6 +204,26 @@ object ConfigManager {
     /** 缓存 TTL（天），超过此值从磁盘驱逐。默认 7 天。 */
     fun getCacheTtlDays(context: Context): Long = getPrefs(context).getLong(KEY_CACHE_TTL_DAYS, 7L).coerceAtLeast(1L)
     fun setCacheTtlDays(context: Context, v: Long) { getPrefs(context).edit().putLong(KEY_CACHE_TTL_DAYS, v.coerceAtLeast(1L)).apply() }
+
+    // ===== 全局响度处理 =====
+
+    /**
+     * 响度处理模式（v0.6.x）：
+     * - "off"（默认）：不做处理，保留 MiniMax 原始响度（可能忽大忽小）
+     * - "rms"：每段 wav 整体 gain 到目标 dBFS（-18 dBFS），所有段响度一致
+     * - "drc"：动态范围压缩，保留抑扬但拉近极值
+     *
+     * 注：缓存里存原始 wav，模式在合成返回前才生效 —— 切换模式立即生效，无需清缓存。
+     */
+    fun getNormalizeMode(context: Context): String {
+        val v = getPrefs(context).getString(KEY_NORMALIZE_MODE, "off") ?: "off"
+        return if (v in listOf("off", "rms", "drc")) v else "off"
+    }
+
+    fun setNormalizeMode(context: Context, mode: String) {
+        val safe = if (mode in listOf("off", "rms", "drc")) mode else "off"
+        getPrefs(context).edit().putString(KEY_NORMALIZE_MODE, safe).apply()
+    }
 
     /**
      * 加载所有用户配置，含旧数据迁移

@@ -81,9 +81,10 @@ class TtsServer(
         )
         ttsClient = MiniMaxTtsClient(
             rateLimiter = rateLimiter,
-            audioCache = audioCache
+            audioCache = audioCache,
+            normalizeModeProvider = { ConfigManager.getNormalizeMode(context) }
         )
-        Log.i(TAG, "TtsServer init — rate=${rpm}RPM cache=${if (cacheEnabled) "enabled" else "disabled"} max=${cacheMaxEntries} ttl=${cacheTtlDays}d")
+        Log.i(TAG, "TtsServer init — rate=${rpm}RPM cache=${if (cacheEnabled) "enabled" else "disabled"} max=${cacheMaxEntries} ttl=${cacheTtlDays}d normalize=${ConfigManager.getNormalizeMode(context)}")
     }
 
     override fun serve(session: IHTTPSession): Response {
@@ -270,7 +271,9 @@ class TtsServer(
             "cacheMaxEntries" to ConfigManager.getCacheMaxEntries(context),
             "cacheTtlDays" to ConfigManager.getCacheTtlDays(context),
             "cacheMemoryEntries" to audioCache.memorySize(),
-            "cacheDiskBytes" to audioCache.diskSizeBytes()
+            "cacheDiskBytes" to audioCache.diskSizeBytes(),
+            // v0.6.x：响度归一化模式（前端下拉框 / 状态显示用）
+            "normalizeMode" to ConfigManager.getNormalizeMode(context)
         )
         return newFixedLengthResponse(Response.Status.OK, "application/json", gson.toJson(status))
     }

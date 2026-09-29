@@ -5,6 +5,7 @@ import com.google.gson.Gson
 import com.minimax.ttsreader.cache.AudioCache
 import com.minimax.ttsreader.model.*
 import com.minimax.ttsreader.util.AudioUtils
+import com.minimax.ttsreader.util.AudioNormalizer
 import com.minimax.ttsreader.util.RateLimiter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -37,6 +38,7 @@ import java.util.concurrent.TimeUnit
 class MiniMaxTtsClient(
     private val rateLimiter: RateLimiter,
     private val audioCache: AudioCache,
+    private val normalizeModeProvider: () -> String = { AudioNormalizer.MODE_OFF },
     private val maxRetries: Int = 3
 ) {
 
@@ -70,10 +72,12 @@ class MiniMaxTtsClient(
     ): TtsResult = withContext(Dispatchers.IO) {
         val key = buildCacheKey(text, config)
 
-        // L1: 查缓存
+        // L1: 查缓存（存的是原始 wav，归一化在返回前做）
         audioCache.get(key)?.let { cached ->
-            Log.d(TAG, "[cache HIT] ${text.take(40)}... (${cached.size} bytes)")
-            return@withContext TtsResult(audio = cached, extraInfo = null, fromCache = true)
+            val mode = normalizeModeProvider()
+            val processed = AudioNormalizer.process(cached, mode)
+            Log.d(TAG, "[cache HIT + $mode] ${text.take(40)}... (raw=${cached.size} → out=${processed.size} bytes)")
+            return@withContext TtsResult(audio = processed, extraInfo = null, fromCache = true)
         }
 
         // L2: 限速 + 重试
@@ -82,10 +86,14 @@ class MiniMaxTtsClient(
 
         val result = synthesizeWithRetry(apiKey, groupId, text, config)
 
-        // L3: 落缓存
+        // L3: 落缓存（存原始 wav，与归一化模式无关 —— 切换模式不需要清缓存）
         audioCache.put(key, result.audio)
-        Log.d(TAG, "[cache MISS → saved] ${text.take(40)}... (${result.audio.size} bytes)")
-        result
+
+        // L4: 归一化处理（按当前模式），再返回
+        val mode = normalizeModeProvider()
+        val processed = AudioNormalizer.process(result.audio, mode)
+        Log.d(TAG, "[cache MISS + $mode] ${text.take(40)}... (raw=${result.audio.size} → out=${processed.size} bytes)")
+        TtsResult(audio = processed, extraInfo = result.extraInfo, fromCache = false)
     }
 
     /**

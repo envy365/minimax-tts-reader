@@ -219,6 +219,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // ===== 全局响度处理（v0.6.x） =====
+
+        @JavascriptInterface
+        fun getNormalizeMode(): String = ConfigManager.getNormalizeMode(this@MainActivity)
+
+        @JavascriptInterface
+        fun setNormalizeMode(mode: String) {
+            ConfigManager.setNormalizeMode(this@MainActivity, mode)
+        }
+
         // ===== 全局 LLM 设置 =====
 
         @JavascriptInterface

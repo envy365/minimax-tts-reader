@@ -204,6 +204,15 @@
                         <select id="channelSelect"></select>
                     </div>
                     <div class="form-group">
+                        <label for="normalizeModeSelect">响度归一化（v0.6.x，针对 MiniMax 后端 RMS 不一致）</label>
+                        <select id="normalizeModeSelect" onchange="onNormalizeModeChange()">
+                            <option value="off">关闭（保留原始响度，可能忽大忽小）</option>
+                            <option value="rms">RMS 归一化（所有段响度一致，会牺牲抑扬顿挫）</option>
+                            <option value="drc">动态范围压缩（保留抑扬但拉近极值，推荐）</option>
+                        </select>
+                        <small class="hint">缓存里始终存原始 wav，切换模式立即生效，无需清缓存</small>
+                    </div>
+                    <div class="form-group">
                         <label for="pronunciationDict">发音字典（可选）</label>
                         <textarea id="pronunciationDict" rows="2" placeholder="逗号分隔，如 燕少飞/(yan4)(shao3)(fei1),omg/oh my god"></textarea>
                     </div>

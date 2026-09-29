@@ -9,6 +9,7 @@ function init() {
     loadConfigList();
     loadActiveConfig();
     initTestPrompts();
+    loadNormalizeMode();
     try { updateServiceUI(Android.isServiceRunning()); } catch(e) {}
     startLogRefresh();
 }
@@ -760,6 +761,24 @@ function escapeHtml(text) {
     var div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// ===== 响度归一化（v0.6.x）=====
+
+function loadNormalizeMode() {
+    try {
+        var mode = Android.getNormalizeMode();
+        var sel = document.getElementById('normalizeModeSelect');
+        if (sel) sel.value = mode || 'off';
+    } catch (e) {}
+}
+
+function onNormalizeModeChange() {
+    try {
+        var mode = document.getElementById('normalizeModeSelect').value;
+        Android.setNormalizeMode(mode);
+        Android.showToast('响度模式已切换：' + mode + '（下次合成生效）');
+    } catch (e) {}
 }
 
 // ===== 滑块输入校验 =====
