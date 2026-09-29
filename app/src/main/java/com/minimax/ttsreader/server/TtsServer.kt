@@ -99,7 +99,9 @@ class TtsServer(
                 uri == "/api/reader/tts" -> handleReaderTtsRequest(requestId, session)
                 uri == "/api/status" && method == Method.GET -> serveStatus()
                 uri == "/api/cache/status" && method == Method.GET -> serveCacheStatus()
-                uri == "/api/config" && method == Method.GET -> serveConfig()
+                // 安全审计 P0-2（2026-09-29）：删除 /api/config 端点（其返回完整 VoiceConfig 含 apiKey/groupId）。
+                // 前端 WebView 走 JSBridge (Android.loadConfigByName) 拉配置，无需 HTTP endpoint。
+                // 同设备其他 app / adb forward / 调试器调 127.0.0.1:9966/api/config 即可抽 apiKey，活靶子零门槛。
                 uri == "/api/voices" && method == Method.GET -> serveVoices()
                 uri == "/api/options" && method == Method.GET -> serveOptions()
                 uri == "/api/llm-logs/dates" && method == Method.GET -> serveLlmLogDates()
@@ -271,11 +273,6 @@ class TtsServer(
             "cacheDiskBytes" to audioCache.diskSizeBytes()
         )
         return newFixedLengthResponse(Response.Status.OK, "application/json", gson.toJson(status))
-    }
-
-    private fun serveConfig(): Response {
-        val config = configProvider()
-        return newFixedLengthResponse(Response.Status.OK, "application/json", gson.toJson(config))
     }
 
     private fun serveVoices(): Response {
