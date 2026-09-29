@@ -331,4 +331,49 @@ object VoiceRegistry {
     fun getVoiceId(name: String): String {
         return PRESET_VOICES.find { it.name == name || it.id == name }?.id ?: "audiobook_male_1"
     }
+
+    /**
+     * 生成 Reading Archive HttpTTS.speakersJson 字段（v0.7.1）。
+     *
+     * 用途：填进 buildLegadoRule() 的 JSON，让 Legado 的「发言人管理」picker 看到可用的 voice 列表。
+     * 不传这个字段 → picker 永远空（用户在 Legado 端只能选「TTS 服务」但看不到具体 voice）。
+     *
+     * 格式参考：https://github.com/ReadingArchive/assets/web/help/md/httpTTSHelp.md
+     * - 平铺: `[{ "speakerName": "...", "toneID": "..." }]`
+     * - 分组: `[{ "groupId": "...", "groupName": "...", "items": [...] }]`（按 category 分组）
+     *
+     * 实现：按 VoiceInfo.category 分组，category 字段含「有声书」「主持」「青年」「童声」「卡通」「其他」。
+     */
+    fun buildSpeakersJsonForLegado(): String {
+        val grouped = PRESET_VOICES.groupBy { it.category.ifBlank { "其他" } }
+        val sb = StringBuilder("[")
+        var first = true
+        for ((category, voices) in grouped) {
+            if (!first) sb.append(",")
+            first = false
+            sb.append("{")
+            sb.append("\"groupId\":").append(jsonString(category))
+            sb.append(",")
+            sb.append("\"groupName\":").append(jsonString(category))
+            sb.append(",")
+            sb.append("\"items\":[")
+            voices.forEachIndexed { idx, v ->
+                if (idx > 0) sb.append(",")
+                sb.append("{\"speakerName\":").append(jsonString(v.name))
+                sb.append(",\"toneID\":").append(jsonString(v.id))
+                sb.append(",\"gender\":").append(jsonString(v.gender))
+                sb.append("}")
+            }
+            sb.append("]")
+            sb.append("}")
+        }
+        sb.append("]")
+        return sb.toString()
+    }
+
+    /** JSON 字符串字面量转义（仅处理中文/英文/数字/标点够用，不处理控制字符） */
+    private fun jsonString(s: String): String {
+        val escaped = s.replace("\\", "\\\\").replace("\"", "\\\"")
+        return "\"$escaped\""
+    }
 }

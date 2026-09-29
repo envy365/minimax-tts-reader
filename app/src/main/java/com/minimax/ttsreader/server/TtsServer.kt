@@ -60,7 +60,11 @@ class TtsServer(
                     "?text={{java.encodeURI(speakText)}}" +
                     "&voice={{currentToneID || ''}}" +
                     "&emotion={{currentEmotionTag || ''}}" +
-                    "&speaker={{currentSpeakerName || ''}}"
+                    "&speaker={{currentSpeakerName || ''}}",
+                // v0.7.1：speaker 列表 —— Reading Archive 发言人管理 picker 的数据源
+                // 不传这个字段 → picker 永远是空的（用户看到「除了分组名称只有 TTS 服务选项」就是这个原因）
+                // 按 VoiceRegistry.PRESET_VOICES 的 category 分组生成 JSON（参考 httpTTSHelp.md 的格式）
+                "speakersJson" to com.minimax.ttsreader.model.VoiceRegistry.buildSpeakersJsonForLegado()
             )
             // 关键修复：返回数组 [{...}] 而非单对象
             return Gson().toJson(listOf(rule))
