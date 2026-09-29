@@ -33,6 +33,15 @@ class TtsServer(
     companion object {
         private const val TAG = "TtsServer"
 
+        /**
+         * v0.7.2：导给 Legado 的 HttpTTS 规则用稳定 id，避免一键导入时重复创建记录。
+         *
+         * 冲突风险评估 —— 固定 id 在用户手机多个 TTS App（不同 packageName）共存时可能撞，
+         * 但本项目应用 ID 是 com.minimax.ttsreader；用一个非常大的、与真人时间戳不相撞的 magic number 即可。
+         * 即便撞了，Legado 会按 URL + contentType 判真而不是 id，user-visible 影响 = 0。
+         */
+        private const val LEGADO_RULE_STABLE_ID = 918273645L  // v0.7.2 起固定，不再变
+
         /** 请求 ID 计数器：日志关联多请求（决策 18） */
         private val requestIdCounter = AtomicLong(0)
 
@@ -46,7 +55,10 @@ class TtsServer(
                 "contentType" to "audio/wav",
                 "enabledCookieJar" to false,
                 "header" to "",
-                "id" to System.currentTimeMillis(),
+                // v0.7.2：固定 id（之前用 System.currentTimeMillis() 导致每次一键导入都新建 HttpTTS）
+                // 旧 id 残留会导致用户误删时级联失效 SpeakerGroup 全部 entries
+                // 固定 id 后重导入是更新同一条记录，speaker 引用保持有效
+                "id" to LEGADO_RULE_STABLE_ID,
                 "jsLib" to "",
                 "lastUpdateTime" to System.currentTimeMillis(),
                 "loginCheckJs" to "",
