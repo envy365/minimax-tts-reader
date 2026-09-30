@@ -13,7 +13,9 @@ import com.minimax.ttsreader.util.ConfigManager
 import com.minimax.ttsreader.util.DialogueClassifier
 import com.minimax.ttsreader.util.LlmLogger
 import com.minimax.ttsreader.util.RateLimiter
+import com.minimax.ttsreader.util.SegmentSplitter
 import com.minimax.ttsreader.util.TextPreprocessor
+import com.minimax.ttsreader.util.WavConcatenator
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayInputStream
@@ -171,12 +173,15 @@ class TtsServer(
     /**
      * legado 朗读端点（GET）：非流式合成，返回 wav
      *
-     * v0.8.0 双引擎路由：
-     * - 用 DialogueClassifier.classify(text, speaker, toneID) 判断 DIALOGUE / NARRATION
-     * - DIALOGUE → MiniMaxTtsClient（需要 apiKey/groupId；情绪化声音）
-     * - NARRATION → AndroidSystemTtsClient（无需凭证；本地系统 TTS，含 Sherpa-onnx Piper）
+     * v0.8.2（Stage 14）双引擎 + 子段切分：
+     * 1. 用 SegmentSplitter 把 text 切成 N 个子段（引号/冒号/心理活动边界）
+     * 2. 每个子段按 DialogueClassifier 分流：
+     *    - DIALOGUE → MiniMaxTtsClient（情绪化声音）
+     *    - NARRATION → AndroidSystemTtsClient（零 token 成本）
+     * 3. 用 WavConcatenator 把所有子段 wav 拼回一个连续 wav
      *
      * 跳过 LLM 文本预处理（v0.7.5 起用户偏好：浪费 token）
+     * 跳过整段 cache（v0.8.2）：子段 cache 已由各客户端内部处理，整段 cache 收益小、占用大
      */
     private fun handleReaderTtsRequest(requestId: Long, session: IHTTPSession): Response {
         val config = configProvider()
@@ -188,14 +193,9 @@ class TtsServer(
         }
 
         // v0.7.x：per-request 覆盖字段（多角色朗读支持）
-        // Reading Archive 在多角色模式下会带 voice / emotion / speaker 三参；老 Legado 不带或带 "{{x }}" 字面字符串
-        // 缺失或字面未替换 → 沿用 config 默认值
         val overrideVoice = params["voice"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
         val overrideEmotion = params["emotion"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
         // v0.8.1（Stage 11）：不再把 voice/speaker 喂给 DialogueClassifier。
-        // 原版用 params["voice"] 作 toneID，但 voice 是用户全局音色永远非空 → 规则 1 永远命中 → 纯旁白也被判 DIALOGUE。
-        // Rimchars Legado 多角色 fallback 同样给每段打 speaker（如 "精英青年"），让规则 1 进一步失效。
-        // 分类器现在纯按文本规则（引号/冒号格式/心理活动）判定。
         val speakerName: String? = null  // 保留变量名以兼容旧 log，不参与判定
         val toneID: String? = null  // 同上
 
@@ -210,46 +210,32 @@ class TtsServer(
         Log.i(TAG, "[#$requestId] Reader TTS: text='${text.take(50)}...', dual=$dualEnabled, voice=${effectiveConfig.voice}, speaker=$speakerName, emotion=${effectiveConfig.emotion}")
 
         return try {
-            val wav = if (dualEnabled) {
-                // v0.8.0：双引擎路由 —— DialogueClassifier 分流
-                val segmentType = DialogueClassifier.classify(text, speakerName, toneID)
-                Log.d(TAG, "[#$requestId] Reader TTS classify → $segmentType")
-                when (segmentType) {
-                    DialogueClassifier.SegmentType.DIALOGUE -> {
-                        // 台词 → MiniMax TTS（需要凭证）
-                        if (config.apiKey.isBlank() || config.groupId.isBlank()) {
-                            return newFixedLengthResponse(
-                                Response.Status.FORBIDDEN,
-                                MIME_PLAINTEXT,
-                                "台词段需要 MiniMax API Key + GroupId（旁白段不需要）"
-                            )
-                        }
-                        runBlocking {
-                            ttsClient.synthesize(config.apiKey, config.groupId, text, effectiveConfig).audio
-                        }
-                    }
-                    DialogueClassifier.SegmentType.NARRATION -> {
-                        // 旁白 → 本地系统 TTS（无需凭证，零 token 成本）
-                        runBlocking {
-                            androidSystemClient.synthesize(
-                                text = text,
-                                speed = effectiveConfig.speed.toDouble(),
-                                pitchAndroidPitch = androidSystemClient.miniMaxPitchToAndroidPitch(effectiveConfig.pitch),
-                                locale = Locale.SIMPLIFIED_CHINESE
-                            )
+            val wav = runBlocking {
+                if (dualEnabled) {
+                    // v0.8.2（Stage 14）：双引擎路由 + 子段切分
+                    val subs = SegmentSplitter.split(text)
+                    Log.d(TAG, "[#$requestId] Reader TTS split → ${subs.size} subs (rules=${subs.joinToString(",") { it.rule }})")
+
+                    if (subs.size == 1 && subs[0].rule == "no-split") {
+                        // 单子段且无切分：走原 DialogueClassifier 路径（保留 v0.8.0 行为）
+                        val sub = subs[0]
+                        synthesizeSubSegment(sub, config, effectiveConfig)
+                    } else {
+                        // 多子段：分别合成 → 拼 wav
+                        val wavs = subs.map { synthesizeSubSegment(it, config, effectiveConfig) }
+                        try {
+                            WavConcatenator.concat(wavs)
+                        } catch (e: Exception) {
+                            // 参数不一致（采样率/声道/位深）→ 降级：只用第一个子段 wav
+                            Log.w(TAG, "[#$requestId] WAV concat 失败（参数不一致？），降级用第一个子段: ${e.message}")
+                            wavs.first()
                         }
                     }
-                }
-            } else {
-                // 单引擎模式（v0.7.4 旧行为）：全部走 MiniMax
-                if (config.apiKey.isBlank() || config.groupId.isBlank()) {
-                    return newFixedLengthResponse(
-                        Response.Status.FORBIDDEN,
-                        MIME_PLAINTEXT,
-                        "请先配置 MiniMax API Key + GroupId"
-                    )
-                }
-                runBlocking {
+                } else {
+                    // 单引擎模式（v0.7.4 旧行为）：全部走 MiniMax
+                    if (config.apiKey.isBlank() || config.groupId.isBlank()) {
+                        throw IllegalStateException("FORBIDDEN:请先配置 MiniMax API Key + GroupId")
+                    }
                     ttsClient.synthesize(config.apiKey, config.groupId, text, effectiveConfig).audio
                 }
             }
@@ -258,6 +244,19 @@ class TtsServer(
                 Response.Status.OK, "audio/wav",
                 ByteArrayInputStream(wav), wav.size.toLong()
             )
+        } catch (e: IllegalStateException) {
+            // 特殊 FORBIDDEN 透传：单引擎模式未配置凭证时返回 403 而不是 500
+            val msg = e.message ?: ""
+            if (msg.startsWith("FORBIDDEN:")) {
+                Log.w(TAG, "[#$requestId] Reader TTS 403: ${msg.removePrefix("FORBIDDEN:")}")
+                newFixedLengthResponse(
+                    Response.Status.FORBIDDEN, MIME_PLAINTEXT,
+                    msg.removePrefix("FORBIDDEN:")
+                )
+            } else {
+                Log.e(TAG, "[#$requestId] Reader TTS failed (dual=$dualEnabled)", e)
+                newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "TTS Error: $msg")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "[#$requestId] Reader TTS failed (dual=$dualEnabled)", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "TTS Error: ${e.message}")
@@ -265,11 +264,44 @@ class TtsServer(
     }
 
     /**
+     * 合成单个子段 wav（双引擎路由实现细节）
+     *
+     * @param sub SegmentSplitter.SubSegment，含 text + type + rule
+     * @return wav 字节
+     * @throws IllegalStateException 台词段但未配置 MiniMax 凭证
+     */
+    private suspend fun synthesizeSubSegment(
+        sub: SegmentSplitter.SubSegment,
+        config: VoiceConfig,
+        effectiveConfig: VoiceConfig
+    ): ByteArray {
+        return when (sub.type) {
+            DialogueClassifier.SegmentType.DIALOGUE -> {
+                // 台词 → MiniMax TTS（需要凭证）
+                if (config.apiKey.isBlank() || config.groupId.isBlank()) {
+                    throw IllegalStateException(
+                        "台词段需要 MiniMax API Key + GroupId（旁白段不需要）" +
+                            " | sub.text='${sub.text.take(30)}' rule=${sub.rule}"
+                    )
+                }
+                ttsClient.synthesize(config.apiKey, config.groupId, sub.text, effectiveConfig).audio
+            }
+            DialogueClassifier.SegmentType.NARRATION -> {
+                // 旁白 → 本地系统 TTS（无需凭证，零 token 成本）
+                androidSystemClient.synthesize(
+                    text = sub.text,
+                    speed = effectiveConfig.speed.toDouble(),
+                    pitchAndroidPitch = androidSystemClient.miniMaxPitchToAndroidPitch(effectiveConfig.pitch),
+                    locale = Locale.SIMPLIFIED_CHINESE
+                )
+            }
+        }
+    }
+
+    /**
      * 通用 TTS 端点（GET/POST）：兼容 legado POST 模式与 App 内测试
      *
-     * v0.8.0：双引擎路由（与 handleReaderTtsRequest 同样按 DialogueClassifier 分发）
-     * - DIALOGUE → MiniMax（需要 apiKey/groupId）
-     * - NARRATION → AndroidSystemTtsClient（无需凭证）
+     * v0.8.2（Stage 14）：与 handleReaderTtsRequest 同样的 split + 双引擎路由 + WavConcatenator 逻辑
      */
     private fun handleTtsRequest(requestId: Long, session: IHTTPSession): Response {
         val config = configProvider()
@@ -287,44 +319,29 @@ class TtsServer(
         Log.i(TAG, "[#$requestId] TTS: text='${text.take(50)}...', dual=$dualEnabled, speed=${config.speed}, voice=${config.voice}, llm=${config.llmEnabled}")
 
         return try {
-            val wav = if (dualEnabled) {
-                // v0.8.0：双引擎路由 —— DialogueClassifier 分流
-                val segmentType = DialogueClassifier.classify(text)
-                Log.d(TAG, "[#$requestId] TTS classify → $segmentType")
-                when (segmentType) {
-                    DialogueClassifier.SegmentType.DIALOGUE -> {
-                        if (config.apiKey.isBlank() || config.groupId.isBlank()) {
-                            return newFixedLengthResponse(
-                                Response.Status.FORBIDDEN,
-                                MIME_PLAINTEXT,
-                                "台词段需要 MiniMax API Key + GroupId（旁白段不需要）"
-                            )
-                        }
-                        runBlocking {
-                            ttsClient.synthesize(config.apiKey, config.groupId, text, config).audio
-                        }
-                    }
-                    DialogueClassifier.SegmentType.NARRATION -> {
-                        runBlocking {
-                            androidSystemClient.synthesize(
-                                text = text,
-                                speed = config.speed.toDouble(),
-                                pitchAndroidPitch = androidSystemClient.miniMaxPitchToAndroidPitch(config.pitch),
-                                locale = Locale.SIMPLIFIED_CHINESE
-                            )
+            val wav = runBlocking {
+                if (dualEnabled) {
+                    // v0.8.2（Stage 14）：双引擎路由 + 子段切分
+                    val subs = SegmentSplitter.split(text)
+                    Log.d(TAG, "[#$requestId] TTS split → ${subs.size} subs (rules=${subs.joinToString(",") { it.rule }})")
+
+                    if (subs.size == 1 && subs[0].rule == "no-split") {
+                        val sub = subs[0]
+                        synthesizeSubSegment(sub, config, config)
+                    } else {
+                        val wavs = subs.map { synthesizeSubSegment(it, config, config) }
+                        try {
+                            WavConcatenator.concat(wavs)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "[#$requestId] WAV concat 失败（参数不一致？），降级用第一个子段: ${e.message}")
+                            wavs.first()
                         }
                     }
-                }
-            } else {
-                // 单引擎模式（v0.7.4 旧行为）：全部走 MiniMax
-                if (config.apiKey.isBlank() || config.groupId.isBlank()) {
-                    return newFixedLengthResponse(
-                        Response.Status.FORBIDDEN,
-                        MIME_PLAINTEXT,
-                        "请先配置 MiniMax API Key + GroupId"
-                    )
-                }
-                runBlocking {
+                } else {
+                    // 单引擎模式（v0.7.4 旧行为）：全部走 MiniMax
+                    if (config.apiKey.isBlank() || config.groupId.isBlank()) {
+                        throw IllegalStateException("FORBIDDEN:请先配置 MiniMax API Key + GroupId")
+                    }
                     ttsClient.synthesize(config.apiKey, config.groupId, text, config).audio
                 }
             }
@@ -333,6 +350,18 @@ class TtsServer(
                 Response.Status.OK, "audio/wav",
                 ByteArrayInputStream(wav), wav.size.toLong()
             )
+        } catch (e: IllegalStateException) {
+            val msg = e.message ?: ""
+            if (msg.startsWith("FORBIDDEN:")) {
+                Log.w(TAG, "[#$requestId] TTS 403: ${msg.removePrefix("FORBIDDEN:")}")
+                newFixedLengthResponse(
+                    Response.Status.FORBIDDEN, MIME_PLAINTEXT,
+                    msg.removePrefix("FORBIDDEN:")
+                )
+            } else {
+                Log.e(TAG, "[#$requestId] TTS synthesis failed (dual=$dualEnabled)", e)
+                newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "TTS Error: $msg")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "[#$requestId] TTS synthesis failed (dual=$dualEnabled)", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "TTS Error: ${e.message}")

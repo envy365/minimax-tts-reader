@@ -11,8 +11,8 @@ android {
         applicationId = "com.minimax.ttsreader"
         minSdk = 24
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.8.0"
+        versionCode = 13
+        versionName = "0.8.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
