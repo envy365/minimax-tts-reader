@@ -8,11 +8,10 @@ package com.minimax.ttsreader.util
  * - 旁白 → 本地 Piper / 系统 TTS（零 token 成本）
  *
  * 判定优先级（任一命中即台词，否则旁白）：
- * 1. **URL 信号**（Reading APP 主动告知）：`currentSpeakerName` 或 `currentToneID` 非空
- * 2. **引号对**：中文"" / 「」 / 英文"" / '' 都算（必须成对出现）
- * 3. **冒号格式**：1-6 个汉字 + 道/说/问/喊/叫/笑/叹/答/喝/议论/自语 + （可选空白）+ 中英文冒号
- * 4. **心理活动**：1-6 个汉字 + 心/想/忖/思/默念/忆 + （可选空白）+ 中英文冒号
- * 5. **默认旁白**
+ * 1. **引号对**：中文"" / 「」 / 英文"" / '' 都算（必须成对出现）
+ * 2. **冒号格式**：1-6 个汉字 + 道/说/问/喊/叫/笑/叹/答/喝/议论/自语 + （可选空白）+ 中英文冒号
+ * 3. **心理活动**：1-6 个汉字 + 心/想/忖/思/默念/忆 + （可选空白）+ 中英文冒号
+ * 4. **默认旁白**
  *
  * 覆盖估算（中文小说主流场景）：
  * - 纯旁白小说 → 100% 旁白
@@ -20,6 +19,13 @@ package com.minimax.ttsreader.util
  * - 心理活动密集小说 → ~10% 漏判降级到旁白（不影响听感）
  *
  * 不调用 LLM——纯字符串规则，零 token 成本。
+ *
+ * v0.8.1（Stage 11 修复）：**移除了原"URL 信号"规则（speaker/toneID 非空 → DIALOGUE）**。
+ * 原规则被两个事实绕过：
+ * 1. `voice` 是用户全局音色（每次请求都带，永远非空），原代码把它当 toneID
+ * 2. Rimchars Legado 多角色模块给每个 segment 都打 fallback speaker（"精英青年"），永远非空
+ * 二者叠加导致纯旁白段（如 "结果他妈的在巴西挖了两年..."）也判 DIALOGUE。
+ * 修复后纯按文本规则判定，与 Rimchars fallback 解耦。
  */
 object DialogueClassifier {
 
@@ -32,32 +38,27 @@ object DialogueClassifier {
      * 主判定入口
      *
      * @param text 待合成文本（已过滤 LLM 净化后的内容）
-     * @param currentSpeakerName Reading APP URL 模板里的 currentSpeakerName（非空 → DIALOGUE）
-     * @param currentToneID Reading APP URL 模板里的 currentToneID（非空 → DIALOGUE）
+     * @param currentSpeakerName 保留参数以兼容调用方，**当前不再使用**（v0.8.1 修复后）
+     * @param currentToneID 保留参数以兼容调用方，**当前不再使用**（v0.8.1 修复后）
      */
     fun classify(
         text: String,
-        currentSpeakerName: String? = null,
-        currentToneID: String? = null
+        @Suppress("UNUSED_PARAMETER") currentSpeakerName: String? = null,
+        @Suppress("UNUSED_PARAMETER") currentToneID: String? = null
     ): SegmentType {
         if (text.isBlank()) return SegmentType.NARRATION
 
-        // 优先级 1: URL 信号（Reading APP 主动告知，最可靠）
-        if (!currentSpeakerName.isNullOrBlank() || !currentToneID.isNullOrBlank()) {
-            return SegmentType.DIALOGUE
-        }
-
-        // 优先级 2: 引号对
+        // 优先级 1: 引号对
         if (hasQuotePair(text)) {
             return SegmentType.DIALOGUE
         }
 
-        // 优先级 3: 冒号格式（"张三道："）
+        // 优先级 2: 冒号格式（"张三道："）
         if (matchesSpeakerColon(text)) {
             return SegmentType.DIALOGUE
         }
 
-        // 优先级 4: 心理活动
+        // 优先级 3: 心理活动
         if (matchesMentalActivity(text)) {
             return SegmentType.DIALOGUE
         }

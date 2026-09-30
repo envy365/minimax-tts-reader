@@ -196,8 +196,12 @@ class TtsServer(
         // 缺失或字面未替换 → 沿用 config 默认值
         val overrideVoice = params["voice"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
         val overrideEmotion = params["emotion"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
-        val speakerName = params["speaker"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
-        val toneID = params["voice"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }  // voice 参数即 toneID
+        // v0.8.1（Stage 11）：不再把 voice/speaker 喂给 DialogueClassifier。
+        // 原版用 params["voice"] 作 toneID，但 voice 是用户全局音色永远非空 → 规则 1 永远命中 → 纯旁白也被判 DIALOGUE。
+        // Rimchars Legado 多角色 fallback 同样给每段打 speaker（如 "精英青年"），让规则 1 进一步失效。
+        // 分类器现在纯按文本规则（引号/冒号格式/心理活动）判定。
+        val speakerName: String? = null  // 保留变量名以兼容旧 log，不参与判定
+        val toneID: String? = null  // 同上
 
         // v0.8.0：双引擎开关（用户在 App 内配置；改后需重启 Service 生效）
         val dualEnabled = ConfigManager.getDualEngineMode(context)
