@@ -195,6 +195,13 @@
                     </div>
                     <hr class="divider">
                     <p class="hint section-hint">audio_setting 音频输出</p>
+                    <!-- v0.8.0：双引擎开关。默认开：台词→MiniMax（情绪化声音），旁白→Android 系统 TTS（本地引擎）。
+                         关：所有段都走 MiniMax（v0.7.4 旧行为）。
+                         改后需要重启服务生效。 -->
+                    <div class="form-group">
+                        <label><input type="checkbox" id="dualEngineModeToggle" onchange="onDualEngineModeChange()"> 启用双引擎模式（v0.8.0）</label>
+                        <small class="hint" id="dualEngineModeHint">开：台词用 MiniMax（情绪化），旁白用 Android 系统 TTS（本地）。建议把 CloneTTS 设为系统默认引擎以获得高质量本地旁白。</small>
+                    </div>
                     <div class="form-group">
                         <label for="sampleRateSelect">采样率</label>
                         <select id="sampleRateSelect"></select>

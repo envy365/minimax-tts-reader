@@ -27,6 +27,11 @@ object ConfigManager {
     private const val KEY_CACHE_MAX_ENTRIES = "global_cache_max_entries"
     private const val KEY_CACHE_TTL_DAYS = "global_cache_ttl_days"
 
+    // ===== 双引擎模式（v0.8.0）=====
+    // 开：DialogueClassifier 分流，台词→MiniMax，旁白→AndroidSystemTtsClient
+    // 关：全部走 MiniMax（v0.7.4 旧行为，等同于单引擎模式）
+    private const val KEY_DUAL_ENGINE_MODE = "global_dual_engine_mode"
+
     // ===== 全局响度处理（v0.6.x，针对 MiniMax 后端 RMS 不归一化）=====
     private const val KEY_NORMALIZE_MODE = "global_normalize_mode"  // off / rms / drc
 
@@ -204,6 +209,21 @@ object ConfigManager {
     /** 缓存 TTL（天），超过此值从磁盘驱逐。默认 7 天。 */
     fun getCacheTtlDays(context: Context): Long = getPrefs(context).getLong(KEY_CACHE_TTL_DAYS, 7L).coerceAtLeast(1L)
     fun setCacheTtlDays(context: Context, v: Long) { getPrefs(context).edit().putLong(KEY_CACHE_TTL_DAYS, v.coerceAtLeast(1L)).apply() }
+
+    // ===== 双引擎模式（v0.8.0）=====
+
+    /**
+     * 是否启用双引擎模式（v0.8.0）。
+     *
+     * 开：DialogueClassifier.classify() 把每段分成 DIALOGUE/NARRATION
+     *     - DIALOGUE → MiniMaxTtsClient（情绪化声音，需要 apiKey/groupId）
+     *     - NARRATION → AndroidSystemTtsClient（本地引擎，零 token 成本）
+     * 关：所有段都走 MiniMax（v0.7.4 旧行为，单引擎）。
+     *
+     * 默认开。改后需要重启 TtsService 生效（与 LLM/限速等全局设置一致）。
+     */
+    fun getDualEngineMode(context: Context): Boolean = getPrefs(context).getBoolean(KEY_DUAL_ENGINE_MODE, true)
+    fun setDualEngineMode(context: Context, v: Boolean) { getPrefs(context).edit().putBoolean(KEY_DUAL_ENGINE_MODE, v).apply() }
 
     // ===== 全局响度处理 =====
 

@@ -229,6 +229,26 @@ class MainActivity : AppCompatActivity() {
             ConfigManager.setNormalizeMode(this@MainActivity, mode)
         }
 
+        // ===== 双引擎模式（v0.8.0）=====
+
+        /**
+         * 是否启用双引擎路由（v0.8.0）。
+         *
+         * true：DialogueClassifier 把每段分成 DIALOGUE/NARRATION
+         *       - DIALOGUE → MiniMax TTS（情绪化声音，需 apiKey/groupId）
+         *       - NARRATION → Android 系统 TTS（本地引擎，零 token 成本）
+         * false：所有段都走 MiniMax TTS（v0.7.4 旧行为，单引擎模式）
+         *
+         * 改后需用户重启 TtsService 生效（与 LLM/限速等全局设置一致）。
+         */
+        @JavascriptInterface
+        fun getDualEngineMode(): Boolean = ConfigManager.getDualEngineMode(this@MainActivity)
+
+        @JavascriptInterface
+        fun setDualEngineMode(enabled: Boolean) {
+            ConfigManager.setDualEngineMode(this@MainActivity, enabled)
+        }
+
         // ===== DRC 高级参数（v0.7.4，针对 MiniMax Speech-2.8-HD 调优） =====
 
         /**

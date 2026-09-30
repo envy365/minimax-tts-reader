@@ -3,15 +3,17 @@ package com.minimax.ttsreader.server
 import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
+import com.minimax.ttsreader.api.AndroidSystemTtsClient
 import com.minimax.ttsreader.api.MiniMaxTtsClient
 import com.minimax.ttsreader.cache.AudioCache
 import com.minimax.ttsreader.model.MiniMaxTtsResponse
 import com.minimax.ttsreader.model.VoiceConfig
 import com.minimax.ttsreader.model.VoiceRegistry
 import com.minimax.ttsreader.util.ConfigManager
+import com.minimax.ttsreader.util.DialogueClassifier
+import com.minimax.ttsreader.util.LlmLogger
 import com.minimax.ttsreader.util.RateLimiter
 import com.minimax.ttsreader.util.TextPreprocessor
-import com.minimax.ttsreader.util.LlmLogger
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayInputStream
@@ -84,6 +86,7 @@ class TtsServer(
     }
 
     private val ttsClient: MiniMaxTtsClient
+    private val androidSystemClient: AndroidSystemTtsClient
     private val rateLimiter: RateLimiter
     val audioCache: AudioCache
     private val gson = Gson()
@@ -106,9 +109,28 @@ class TtsServer(
             rateLimiter = rateLimiter,
             audioCache = audioCache,
             normalizeModeProvider = { ConfigManager.getNormalizeMode(context) },
-            drcConfigProvider = { ConfigManager.getDrcConfig(context) }
+            drcConfigProvider = { ConfigManager.getDrcConfig(context) },
+            cacheKeyPrefix = "[minimax]"
         )
-        Log.i(TAG, "TtsServer init — rate=${rpm}RPM cache=${if (cacheEnabled) "enabled" else "disabled"} max=${cacheMaxEntries} ttl=${cacheTtlDays}d normalize=${ConfigManager.getNormalizeMode(context)} drc=${ConfigManager.getDrcConfig(context)}")
+        // v0.8.0：本地 TTS 引擎（Sherpa-onnx Piper 或 Google TTS，取决于 Android 系统设置）
+        // Sherpa 装好后 Android 系统会把它注册为可选 TTS 引擎，用户在系统设置里选为默认
+        // preferredEngineName = null 让 Android 用系统当前默认引擎（包括 Sherpa-onnx）
+        androidSystemClient = AndroidSystemTtsClient(
+            context = context.applicationContext,
+            audioCache = audioCache,
+            normalizeModeProvider = { ConfigManager.getNormalizeMode(context) },
+            drcConfigProvider = { ConfigManager.getDrcConfig(context) },
+            cacheKeyPrefix = "[system]",
+            preferredEngineName = null
+        )
+        Log.i(TAG, "TtsServer init — rate=${rpm}RPM cache=${if (cacheEnabled) "enabled" else "disabled"} max=${cacheMaxEntries} ttl=${cacheTtlDays}d normalize=${ConfigManager.getNormalizeMode(context)} drc=${ConfigManager.getDrcConfig(context)} dualEngine=ready")
+    }
+
+    /**
+     * 服务关闭时释放 AndroidSystemTtsClient 资源（由 Service.onDestroy 调）
+     */
+    fun shutdownSystemTts() {
+        androidSystemClient.shutdown()
     }
 
     override fun serve(session: IHTTPSession): Response {
@@ -152,16 +174,16 @@ class TtsServer(
 
     /**
      * legado 朗读端点（GET）：非流式合成，返回 wav
-     * 语速由 App 内 speed 配置控制，legado 不传 speed 参数
+     *
+     * v0.8.0 双引擎路由：
+     * - 用 DialogueClassifier.classify(text, speaker, toneID) 判断 DIALOGUE / NARRATION
+     * - DIALOGUE → MiniMaxTtsClient（需要 apiKey/groupId；情绪化声音）
+     * - NARRATION → AndroidSystemTtsClient（无需凭证；本地系统 TTS，含 Sherpa-onnx Piper）
+     *
+     * 跳过 LLM 文本预处理（v0.7.5 起用户偏好：浪费 token）
      */
     private fun handleReaderTtsRequest(requestId: Long, session: IHTTPSession): Response {
         val config = configProvider()
-        if (config.apiKey.isBlank()) {
-            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "API Key 未配置")
-        }
-        if (config.groupId.isBlank()) {
-            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "GroupId 未配置（国内版必需）")
-        }
 
         val params = parseQueryParams(session)
         val text = params["text"] ?: params["speakText"] ?: params["tex"] ?: ""
@@ -175,43 +197,82 @@ class TtsServer(
         val overrideVoice = params["voice"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
         val overrideEmotion = params["emotion"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
         val speakerName = params["speaker"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }
+        val toneID = params["voice"]?.takeIf { it.isNotBlank() && !it.startsWith("{{") }  // voice 参数即 toneID
+
+        // v0.8.0：双引擎开关（用户在 App 内配置；改后需重启 Service 生效）
+        val dualEnabled = ConfigManager.getDualEngineMode(context)
 
         val effectiveConfig = config.copy(
             voice = overrideVoice ?: config.voice,
             emotion = overrideEmotion ?: config.emotion
         )
 
-        Log.i(TAG, "[#$requestId] Reader TTS: text='${text.take(50)}...', voice=${effectiveConfig.voice}, speaker=$speakerName, emotion=${effectiveConfig.emotion}, llm=${config.llmEnabled}")
+        Log.i(TAG, "[#$requestId] Reader TTS: text='${text.take(50)}...', dual=$dualEnabled, voice=${effectiveConfig.voice}, speaker=$speakerName, emotion=${effectiveConfig.emotion}")
 
         return try {
-            val finalText = runBlocking { TextPreprocessor.preprocess(text, effectiveConfig) }
-            val result = runBlocking {
-                ttsClient.synthesize(config.apiKey, config.groupId, finalText, effectiveConfig)
+            val wav = if (dualEnabled) {
+                // v0.8.0：双引擎路由 —— DialogueClassifier 分流
+                val segmentType = DialogueClassifier.classify(text, speakerName, toneID)
+                Log.d(TAG, "[#$requestId] Reader TTS classify → $segmentType")
+                when (segmentType) {
+                    DialogueClassifier.SegmentType.DIALOGUE -> {
+                        // 台词 → MiniMax TTS（需要凭证）
+                        if (config.apiKey.isBlank() || config.groupId.isBlank()) {
+                            return newFixedLengthResponse(
+                                Response.Status.FORBIDDEN,
+                                MIME_PLAINTEXT,
+                                "台词段需要 MiniMax API Key + GroupId（旁白段不需要）"
+                            )
+                        }
+                        runBlocking {
+                            ttsClient.synthesize(config.apiKey, config.groupId, text, effectiveConfig).audio
+                        }
+                    }
+                    DialogueClassifier.SegmentType.NARRATION -> {
+                        // 旁白 → 本地系统 TTS（无需凭证，零 token 成本）
+                        runBlocking {
+                            androidSystemClient.synthesize(
+                                text = text,
+                                speed = effectiveConfig.speed.toDouble(),
+                                pitchAndroidPitch = androidSystemClient.miniMaxPitchToAndroidPitch(effectiveConfig.pitch),
+                                locale = Locale.SIMPLIFIED_CHINESE
+                            )
+                        }
+                    }
+                }
+            } else {
+                // 单引擎模式（v0.7.4 旧行为）：全部走 MiniMax
+                if (config.apiKey.isBlank() || config.groupId.isBlank()) {
+                    return newFixedLengthResponse(
+                        Response.Status.FORBIDDEN,
+                        MIME_PLAINTEXT,
+                        "请先配置 MiniMax API Key + GroupId"
+                    )
+                }
+                runBlocking {
+                    ttsClient.synthesize(config.apiKey, config.groupId, text, effectiveConfig).audio
+                }
             }
-            // 决策 5：WAV 头观察日志，只观察不改数据
-            logWavObservation(requestId, result.audio, result.extraInfo)
-            Log.i(TAG, "[#$requestId] Reader TTS success: ${result.audio.size} bytes, text='${text.take(30)}'")
+            Log.i(TAG, "[#$requestId] Reader TTS success: ${wav.size} bytes, text='${text.take(30)}'")
             newFixedLengthResponse(
                 Response.Status.OK, "audio/wav",
-                ByteArrayInputStream(result.audio), result.audio.size.toLong()
+                ByteArrayInputStream(wav), wav.size.toLong()
             )
         } catch (e: Exception) {
-            Log.e(TAG, "[#$requestId] Reader TTS failed", e)
+            Log.e(TAG, "[#$requestId] Reader TTS failed (dual=$dualEnabled)", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "TTS Error: ${e.message}")
         }
     }
 
     /**
      * 通用 TTS 端点（GET/POST）：兼容 legado POST 模式与 App 内测试
+     *
+     * v0.8.0：双引擎路由（与 handleReaderTtsRequest 同样按 DialogueClassifier 分发）
+     * - DIALOGUE → MiniMax（需要 apiKey/groupId）
+     * - NARRATION → AndroidSystemTtsClient（无需凭证）
      */
     private fun handleTtsRequest(requestId: Long, session: IHTTPSession): Response {
         val config = configProvider()
-        if (config.apiKey.isBlank()) {
-            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "API Key 未配置")
-        }
-        if (config.groupId.isBlank()) {
-            return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "GroupId 未配置（国内版必需）")
-        }
 
         val params = parseAllParams(session)
         val text = params["tex"] ?: params["text"] ?: params["speakText"] ?: ""
@@ -219,21 +280,61 @@ class TtsServer(
             return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "缺少 text 参数")
         }
 
+        // v0.8.0：双引擎开关
+        val dualEnabled = ConfigManager.getDualEngineMode(context)
+
         // 统一用 App 内 speed 配置，legado 传的 speed 不再覆盖
-        Log.i(TAG, "[#$requestId] TTS: text='${text.take(50)}...', speed=${config.speed}, voice=${config.voice}, llm=${config.llmEnabled}")
+        Log.i(TAG, "[#$requestId] TTS: text='${text.take(50)}...', dual=$dualEnabled, speed=${config.speed}, voice=${config.voice}, llm=${config.llmEnabled}")
 
         return try {
-            val finalText = runBlocking { TextPreprocessor.preprocess(text, config) }
-            val result = runBlocking {
-                ttsClient.synthesize(config.apiKey, config.groupId, finalText, config)
+            val wav = if (dualEnabled) {
+                // v0.8.0：双引擎路由 —— DialogueClassifier 分流
+                val segmentType = DialogueClassifier.classify(text)
+                Log.d(TAG, "[#$requestId] TTS classify → $segmentType")
+                when (segmentType) {
+                    DialogueClassifier.SegmentType.DIALOGUE -> {
+                        if (config.apiKey.isBlank() || config.groupId.isBlank()) {
+                            return newFixedLengthResponse(
+                                Response.Status.FORBIDDEN,
+                                MIME_PLAINTEXT,
+                                "台词段需要 MiniMax API Key + GroupId（旁白段不需要）"
+                            )
+                        }
+                        runBlocking {
+                            ttsClient.synthesize(config.apiKey, config.groupId, text, config).audio
+                        }
+                    }
+                    DialogueClassifier.SegmentType.NARRATION -> {
+                        runBlocking {
+                            androidSystemClient.synthesize(
+                                text = text,
+                                speed = config.speed.toDouble(),
+                                pitchAndroidPitch = androidSystemClient.miniMaxPitchToAndroidPitch(config.pitch),
+                                locale = Locale.SIMPLIFIED_CHINESE
+                            )
+                        }
+                    }
+                }
+            } else {
+                // 单引擎模式（v0.7.4 旧行为）：全部走 MiniMax
+                if (config.apiKey.isBlank() || config.groupId.isBlank()) {
+                    return newFixedLengthResponse(
+                        Response.Status.FORBIDDEN,
+                        MIME_PLAINTEXT,
+                        "请先配置 MiniMax API Key + GroupId"
+                    )
+                }
+                runBlocking {
+                    ttsClient.synthesize(config.apiKey, config.groupId, text, config).audio
+                }
             }
-            Log.i(TAG, "[#$requestId] TTS success: ${result.audio.size} bytes, text='${text.take(30)}'")
+            Log.i(TAG, "[#$requestId] TTS success: ${wav.size} bytes, text='${text.take(30)}'")
             newFixedLengthResponse(
                 Response.Status.OK, "audio/wav",
-                ByteArrayInputStream(result.audio), result.audio.size.toLong()
+                ByteArrayInputStream(wav), wav.size.toLong()
             )
         } catch (e: Exception) {
-            Log.e(TAG, "[#$requestId] TTS synthesis failed", e)
+            Log.e(TAG, "[#$requestId] TTS synthesis failed (dual=$dualEnabled)", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "TTS Error: ${e.message}")
         }
     }

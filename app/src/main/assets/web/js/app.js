@@ -10,6 +10,7 @@ function init() {
     loadActiveConfig();
     initTestPrompts();
     loadNormalizeMode();
+    loadDualEngineMode();
     loadDrcConfig();
     updateDrcAdvancedVisibility();
     try { updateServiceUI(Android.isServiceRunning()); } catch(e) {}
@@ -782,6 +783,28 @@ function onNormalizeModeChange() {
         Android.showToast('响度模式已切换：' + mode + '（下次合成生效）');
         // v0.7.4：DRC 模式下显示高级参数面板；切换离开时收起
         updateDrcAdvancedVisibility();
+    } catch (e) {}
+}
+
+// ===== 双引擎模式（v0.8.0）=====
+
+// 初始化 checkbox 状态。Android.getDualEngineMode() 返回 Boolean 字符串 "true"/"false"（JSBridge 标准约定）
+function loadDualEngineMode() {
+    try {
+        var enabled = Android.getDualEngineMode();
+        var cb = document.getElementById('dualEngineModeToggle');
+        if (cb) cb.checked = (enabled === true || enabled === 'true');
+    } catch (e) {}
+}
+
+function onDualEngineModeChange() {
+    try {
+        var cb = document.getElementById('dualEngineModeToggle');
+        var enabled = cb.checked;
+        Android.setDualEngineMode(enabled);
+        Android.showToast(
+            '双引擎模式：' + (enabled ? '开（重启服务生效）' : '关（重启服务生效）')
+        );
     } catch (e) {}
 }
 

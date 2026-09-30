@@ -41,6 +41,12 @@ class MiniMaxTtsClient(
     private val audioCache: AudioCache,
     private val normalizeModeProvider: () -> String = { AudioNormalizer.MODE_OFF },
     private val drcConfigProvider: () -> ConfigManager.DrcConfig = { ConfigManager.DrcConfig() },
+    /**
+     * 缓存 key 前缀（v0.8.0 双引擎方案）：避免不同引擎的合成结果撞同一 cache slot。
+     * - 单引擎模式：传空字符串（行为与 v0.7.x 一致）
+     * - 双引擎模式：dialogue 路径传 "[minimax]" / narration 路径由 AndroidSystemTtsClient 自己管 cache
+     */
+    private val cacheKeyPrefix: String = "",
     private val maxRetries: Int = 3
 ) {
 
@@ -238,9 +244,13 @@ class MiniMaxTtsClient(
     /**
      * 缓存 key：规范化空白后拼接关键参数 → SHA-1 在 AudioCache 里再做。
      * 拼接而不是 hash，便于调试（如果某个组合重复合成，看 raw key 即可定位）。
+     *
+     * v0.8.0 双引擎：cacheKeyPrefix 用于分桶（"[minimax]" / "[system]"），避免两个引擎的
+     * 同一段 text 撞同一 cache slot。
      */
     private fun buildCacheKey(text: String, config: VoiceConfig): String {
         return buildString {
+            append(cacheKeyPrefix)
             append(text.trim())
             append('|')
             append(config.model)
