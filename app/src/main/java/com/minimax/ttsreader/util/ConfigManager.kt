@@ -225,6 +225,56 @@ object ConfigManager {
         getPrefs(context).edit().putString(KEY_NORMALIZE_MODE, safe).apply()
     }
 
+    // ===== DRC 高级参数（v0.7.4，针对 MiniMax Speech-2.8-HD 调优） =====
+
+    /**
+     * DRC 配置参数。提供所有可调维度，方便用户针对自家音频特性微调：
+     * - [thresholdDb]：开始压缩的响度门限（dBFS，越低越温和）
+     * - [ratio]：超过阈值后压缩比例（4:1 表示每超 4 dB 实际输出只多 1 dB）
+     * - [makeupGainDb]：压缩后整体抬升（dB），把谷底拉起来
+     * - [attackMs]：envelope follower 上升时间常数（ms）
+     * - [releaseMs]：envelope follower 下降时间常数（ms）
+     *
+     * 默认值适配 MiniMax Speech-2.8-HD 输出（偏中性、RMS 偏低）。
+     */
+    data class DrcConfig(
+        val thresholdDb: Double = -24.0,
+        val ratio: Double = 4.0,
+        val makeupGainDb: Double = 4.0,
+        val attackMs: Double = 50.0,
+        val releaseMs: Double = 200.0
+    ) {
+        /** 校验所有字段，越界时 clamp 而不是抛错（健壮性优先） */
+        fun normalized(): DrcConfig = copy(
+            thresholdDb = thresholdDb.coerceIn(-36.0, -6.0),
+            ratio = ratio.coerceIn(1.5, 10.0),
+            makeupGainDb = makeupGainDb.coerceIn(-6.0, 12.0),
+            attackMs = attackMs.coerceIn(5.0, 500.0),
+            releaseMs = releaseMs.coerceIn(50.0, 2000.0)
+        )
+    }
+
+    private const val KEY_DRC_CONFIG = "global_drc_config"
+
+    fun getDrcConfig(context: Context): DrcConfig {
+        val json = getPrefs(context).getString(KEY_DRC_CONFIG, null) ?: return DrcConfig()
+        return try {
+            gson.fromJson(json, DrcConfig::class.java)?.normalized() ?: DrcConfig()
+        } catch (_: Exception) {
+            DrcConfig()
+        }
+    }
+
+    fun setDrcConfig(context: Context, config: DrcConfig) {
+        val safe = config.normalized()
+        getPrefs(context).edit().putString(KEY_DRC_CONFIG, gson.toJson(safe)).apply()
+    }
+
+    /** 重置 DRC 高级参数为系统默认（删除 SharedPreferences 键） */
+    fun resetDrcConfig(context: Context) {
+        getPrefs(context).edit().remove(KEY_DRC_CONFIG).apply()
+    }
+
     /**
      * 加载所有用户配置，含旧数据迁移
      */

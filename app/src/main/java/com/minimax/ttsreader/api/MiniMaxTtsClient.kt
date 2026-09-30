@@ -6,6 +6,7 @@ import com.minimax.ttsreader.cache.AudioCache
 import com.minimax.ttsreader.model.*
 import com.minimax.ttsreader.util.AudioUtils
 import com.minimax.ttsreader.util.AudioNormalizer
+import com.minimax.ttsreader.util.ConfigManager
 import com.minimax.ttsreader.util.RateLimiter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -39,6 +40,7 @@ class MiniMaxTtsClient(
     private val rateLimiter: RateLimiter,
     private val audioCache: AudioCache,
     private val normalizeModeProvider: () -> String = { AudioNormalizer.MODE_OFF },
+    private val drcConfigProvider: () -> ConfigManager.DrcConfig = { ConfigManager.DrcConfig() },
     private val maxRetries: Int = 3
 ) {
 
@@ -75,7 +77,8 @@ class MiniMaxTtsClient(
         // L1: 查缓存（存的是原始 wav，归一化在返回前做）
         audioCache.get(key)?.let { cached ->
             val mode = normalizeModeProvider()
-            val processed = AudioNormalizer.process(cached, mode)
+            val drcConfig = drcConfigProvider()
+            val processed = AudioNormalizer.process(cached, mode, drcConfig)
             Log.d(TAG, "[cache HIT + $mode] ${text.take(40)}... (raw=${cached.size} → out=${processed.size} bytes)")
             return@withContext TtsResult(audio = processed, extraInfo = null, fromCache = true)
         }
@@ -91,7 +94,8 @@ class MiniMaxTtsClient(
 
         // L4: 归一化处理（按当前模式），再返回
         val mode = normalizeModeProvider()
-        val processed = AudioNormalizer.process(result.audio, mode)
+        val drcConfig = drcConfigProvider()
+        val processed = AudioNormalizer.process(result.audio, mode, drcConfig)
         Log.d(TAG, "[cache MISS + $mode] ${text.take(40)}... (raw=${result.audio.size} → out=${processed.size} bytes)")
         TtsResult(audio = processed, extraInfo = result.extraInfo, fromCache = false)
     }

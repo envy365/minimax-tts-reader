@@ -19,7 +19,8 @@ import kotlin.math.pow
  * - **[MODE_RMS] RMS 归一化**：每段 wav 整体 gain 到目标 dBFS（-18 dBFS，speech 行业基准）。
  *   所有段响度完全一致，但**自然抑扬顿挫会被压平**（类似过度压缩的播客）。
  *
- * - **[MODE_DRC] 动态范围压缩**：attack=50ms / release=200ms / ratio=3:1 / threshold=-18dBFS。
+ * - **[MODE_DRC] 动态范围压缩**：参数由 [ConfigManager.DrcConfig] 提供，v0.7.4 起用户可在「响度归一化」下拉框
+ *   下展开高级面板调整（默认参数见 [DEFAULT_DRC_CONFIG]，针对 MiniMax Speech-2.8-HD 调优）。
  *   保留自然抑扬曲线，只把过响/过轻的极值拉近（专业音频处理器做法）。
  *
  * 输入输出均为完整 wav 字节（含 44-byte header + PCM data chunk）。
@@ -46,34 +47,30 @@ object AudioNormalizer {
     /** 所有合法模式（前端下拉框用） */
     val ALL_MODES = listOf(MODE_OFF, MODE_RMS, MODE_DRC)
 
-    /** speech loudness 行业基准 */
+    /** speech loudness 行业基准（speech mono target ~-19 LUFS，audiobook ~-18 dBFS） */
     private const val TARGET_DBFS = -18.0
 
-    /** 防止放大底噪：最大正向 gain */
-    private const val MAX_GAIN_DB = 6.0
+    /** 防止放大底噪：最大正向 gain（放宽到 ±9 适应 MiniMax 2.8 HD 偏中性输出） */
+    private const val MAX_GAIN_DB = 9.0
 
     /** 防止过度衰减：最大负向 gain */
-    private const val MIN_GAIN_DB = -6.0
+    private const val MIN_GAIN_DB = -9.0
 
-    /** DRC 参数：attack 时间 50ms（语音典型值） */
-    private const val DRC_ATTACK_MS = 50.0
-
-    /** DRC 参数：release 时间 200ms（语音典型值） */
-    private const val DRC_RELEASE_MS = 200.0
-
-    /** DRC 压缩比：3:1 表示超过阈值的部分衰减为 1/3 */
-    private const val DRC_RATIO = 3.0
+    /** DRC 默认参数（v0.7.4，针对 MiniMax Speech-2.8-HD 调优） */
+    val DEFAULT_DRC_CONFIG = com.minimax.ttsreader.util.ConfigManager.DrcConfig()
 
     /**
      * 入口：按 mode 处理 wav 字节。
      * 未知模式或 OFF → 原样返回。
+     *
+     * [drcConfig] 仅在 MODE_DRC 下生效；其他模式忽略。
      */
-    fun process(wav: ByteArray, mode: String): ByteArray {
+    fun process(wav: ByteArray, mode: String, drcConfig: ConfigManager.DrcConfig = ConfigManager.DrcConfig()): ByteArray {
         if (mode == MODE_OFF || wav.size < 44) return wav
         return try {
             when (mode) {
                 MODE_RMS -> normalizeRMS(wav)
-                MODE_DRC -> applyDRC(wav)
+                MODE_DRC -> applyDRC(wav, drcConfig)
                 else -> wav
             }
         } catch (e: Exception) {
@@ -107,21 +104,23 @@ object AudioNormalizer {
     }
 
     /**
-     * DRC 动态范围压缩：envelope follower + soft-knee compression。
+     * DRC 动态范围压缩：envelope follower + soft-knee compression + makeup gain。
      *
-     * 不做 make-up gain（保留整体音量低于 OFF 模式的状态），用户可与 RMS 模式对比选择。
+     * 参数（threshold / ratio / makeup / attack / release）由 [ConfigManager.DrcConfig] 提供，v0.7.4 起可由用户在
+     * App 设置页高级面板调整。
      */
-    private fun applyDRC(wav: ByteArray): ByteArray {
+    private fun applyDRC(wav: ByteArray, config: ConfigManager.DrcConfig): ByteArray {
         val pcm = extractPCM(wav)
         val params = parseWavHeader(wav) ?: return wav
         if (pcm.isEmpty()) return wav
 
         val sampleRate = params.sampleRate.toDouble()
-        val attackCoef = exp(-1.0 / (DRC_ATTACK_MS / 1000.0 * sampleRate))
-        val releaseCoef = exp(-1.0 / (DRC_RELEASE_MS / 1000.0 * sampleRate))
+        val attackCoef = exp(-1.0 / (config.attackMs / 1000.0 * sampleRate))
+        val releaseCoef = exp(-1.0 / (config.releaseMs / 1000.0 * sampleRate))
         val peakValue = (1 shl (params.bitsPerSample - 1)).toDouble()
-        val threshold = peakValue * 10.0.pow(-18.0 / 20.0)  // -18 dBFS 对应的线性值
-        val thresholdDb = 20.0 * log10(threshold / peakValue)
+        val threshold = peakValue * 10.0.pow(config.thresholdDb / 20.0)  // threshold dBFS 对应的线性值
+        val thresholdDb = config.thresholdDb
+        val makeupLinear = 10.0.pow(config.makeupGainDb / 20.0)  // makeup gain 一次性线性系数
 
         val sampleCount = pcm.size / 2
         val output = ShortArray(sampleCount)
@@ -143,19 +142,21 @@ object AudioNormalizer {
             var gain = 1.0
             if (envelope > threshold) {
                 val envDb = 20.0 * log10(envelope / peakValue)
-                val outputDb = thresholdDb + (envDb - thresholdDb) / DRC_RATIO
+                val outputDb = thresholdDb + (envDb - thresholdDb) / config.ratio
                 val targetEnv = peakValue * 10.0.pow(outputDb / 20.0)
                 gain = targetEnv / envelope
                 compressedCount++
             }
 
-            // 应用 gain，clip 到 16-bit
-            val newSample = (sample * gain).toInt().coerceIn(-32768, 32767)
+            // 应用 gain（压缩 + makeup），clip 到 16-bit
+            // makeupLinear 对未压缩样本（gain=1.0）也生效，等价于整体抬升；压缩样本同时获得 makeup + 压缩
+            val totalGain = gain * makeupLinear
+            val newSample = (sample * totalGain).toInt().coerceIn(-32768, 32767)
             output[i] = newSample.toShort()
         }
 
         val compressRatio = compressedCount.toDouble() / sampleCount
-        Log.d(TAG, "[drc] samples=$sampleCount compressed=${"%.1f".format(compressRatio * 100)}% threshold=${"%.1f".format(thresholdDb)}dBFS ratio=${DRC_RATIO}:1")
+        Log.d(TAG, "[drc] samples=$sampleCount compressed=${"%.1f".format(compressRatio * 100)}% threshold=${"%.1f".format(thresholdDb)}dBFS ratio=${config.ratio}:1 makeup=${"%.1f".format(config.makeupGainDb)}dB attack=${config.attackMs.toInt()}ms release=${config.releaseMs.toInt()}ms")
 
         return writePCM(wav, params, output)
     }

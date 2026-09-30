@@ -212,6 +212,64 @@
                         </select>
                         <small class="hint">缓存里始终存原始 wav，切换模式立即生效，无需清缓存</small>
                     </div>
+                    <!-- v0.7.4：DRC 高级参数面板。仅在 normalizeMode=drc 时显示；点按钮展开子菜单调整 5 个维度。-->
+                    <div class="form-group" id="drcAdvancedPanel" style="display:none;">
+                        <button type="button" class="btn btn-secondary btn-block" onclick="toggleDrcAdvanced()" id="drcAdvancedToggle">▾ 高级参数（DRC 调优）</button>
+                        <div id="drcAdvancedContent" style="display:none; margin-top: 10px;">
+                            <div class="form-group">
+                                <label for="drcThresholdDb">起始阈值 <small class="hint">dBFS</small></label>
+                                <div class="slider-group">
+                                    <button class="slider-btn" data-target="drcThresholdDb" data-dir="-1">−</button>
+                                    <input type="range" id="drcThresholdDb" min="-36" max="-6" step="1" value="-24" oninput="onDrcConfigChange(false)">
+                                    <button class="slider-btn" data-target="drcThresholdDb" data-dir="1">+</button>
+                                    <input type="text" class="slider-val" id="drcThresholdDbVal" value="-24" oninput="onDrcConfigChange(true)" onblur="onDrcConfigChange(true)" onkeydown="if(event.key==='Enter')this.blur()">
+                                </div>
+                                <small class="hint">-36 温和（仅压峰值）/ -6 激进（连中段也压）。仅高于此值的部分会被压缩。</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="drcRatio">压缩比例 <small class="hint">:1</small></label>
+                                <div class="slider-group">
+                                    <button class="slider-btn" data-target="drcRatio" data-dir="-1">−</button>
+                                    <input type="range" id="drcRatio" min="1.5" max="10" step="0.5" value="4" oninput="onDrcConfigChange(false)">
+                                    <button class="slider-btn" data-target="drcRatio" data-dir="1">+</button>
+                                    <input type="text" class="slider-val" id="drcRatioVal" value="4" oninput="onDrcConfigChange(true)" onblur="onDrcConfigChange(true)" onkeydown="if(event.key==='Enter')this.blur()">
+                                </div>
+                                <small class="hint">4:1 = 每超 4 dB 输出只多 1 dB；越大压得越狠。</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="drcMakeupGainDb">补偿增益 <small class="hint">dB</small></label>
+                                <div class="slider-group">
+                                    <button class="slider-btn" data-target="drcMakeupGainDb" data-dir="-1">−</button>
+                                    <input type="range" id="drcMakeupGainDb" min="-6" max="12" step="0.5" value="4" oninput="onDrcConfigChange(false)">
+                                    <button class="slider-btn" data-target="drcMakeupGainDb" data-dir="1">+</button>
+                                    <input type="text" class="slider-val" id="drcMakeupGainDbVal" value="4" oninput="onDrcConfigChange(true)" onblur="onDrcConfigChange(true)" onkeydown="if(event.key==='Enter')this.blur()">
+                                </div>
+                                <small class="hint">压缩后整体抬升，把谷底拉起来（避免听感变闷）。</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="drcAttackMs">Attack 时间 <small class="hint">ms</small></label>
+                                <div class="slider-group">
+                                    <button class="slider-btn" data-target="drcAttackMs" data-dir="-1">−</button>
+                                    <input type="range" id="drcAttackMs" min="5" max="500" step="5" value="50" oninput="onDrcConfigChange(false)">
+                                    <button class="slider-btn" data-target="drcAttackMs" data-dir="1">+</button>
+                                    <input type="text" class="slider-val" id="drcAttackMsVal" value="50" oninput="onDrcConfigChange(true)" onblur="onDrcConfigChange(true)" onkeydown="if(event.key==='Enter')this.blur()">
+                                </div>
+                                <small class="hint">envelope 上升时间（短 → 立即响应；长 → 平滑）。</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="drcReleaseMs">Release 时间 <small class="hint">ms</small></label>
+                                <div class="slider-group">
+                                    <button class="slider-btn" data-target="drcReleaseMs" data-dir="-1">−</button>
+                                    <input type="range" id="drcReleaseMs" min="50" max="2000" step="10" value="200" oninput="onDrcConfigChange(false)">
+                                    <button class="slider-btn" data-target="drcReleaseMs" data-dir="1">+</button>
+                                    <input type="text" class="slider-val" id="drcReleaseMsVal" value="200" oninput="onDrcConfigChange(true)" onblur="onDrcConfigChange(true)" onkeydown="if(event.key==='Enter')this.blur()">
+                                </div>
+                                <small class="hint">envelope 下降时间（短 → 收得紧；长 → 自然呼吸）。</small>
+                            </div>
+                            <button class="btn btn-accent btn-block" onclick="resetDrcConfig()" id="btnResetDrcConfig">恢复默认</button>
+                            <small class="hint" id="drcConfigStatus">使用系统预置（针对 MiniMax Speech-2.8-HD 调优）</small>
+                        </div>
+                    </div>
                     <div class="form-group">
                         <label for="pronunciationDict">发音字典（可选）</label>
                         <textarea id="pronunciationDict" rows="2" placeholder="逗号分隔，如 燕少飞/(yan4)(shao3)(fei1),omg/oh my god"></textarea>

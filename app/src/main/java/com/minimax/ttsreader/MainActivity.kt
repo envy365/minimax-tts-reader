@@ -229,6 +229,38 @@ class MainActivity : AppCompatActivity() {
             ConfigManager.setNormalizeMode(this@MainActivity, mode)
         }
 
+        // ===== DRC 高级参数（v0.7.4，针对 MiniMax Speech-2.8-HD 调优） =====
+
+        /**
+         * 返回当前 DRC 配置 JSON 字符串（含 5 个字段）。前端展开高级面板时调用。
+         * 若用户从未调整过，返回 ConfigManager 内置的默认 DrcConfig（而非空对象），
+         * 便于前端判断"当前显示的就是系统默认"—— resetDrcConfig 走 pref.remove() 也会得到默认。
+         */
+        @JavascriptInterface
+        fun getDrcConfig(): String = Gson().toJson(ConfigManager.getDrcConfig(this@MainActivity))
+
+        /**
+         * 写入 DRC 配置。前端传完整 5 字段对象；后端会在写入前自动 clamp（ConfigManager.setDrcConfig）。
+         * 不返回结果，前端拿不到 error 时用通用 toast 兜底。
+         */
+        @JavascriptInterface
+        fun setDrcConfig(json: String) {
+            try {
+                val cfg = Gson().fromJson(json, ConfigManager.DrcConfig::class.java)
+                ConfigManager.setDrcConfig(this@MainActivity, cfg)
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "DRC 配置保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        /** 重置 DRC 高级参数为系统默认（删除 SharedPreferences 键 → getDrcConfig 回退到 DrcConfig()） */
+        @JavascriptInterface
+        fun resetDrcConfig() {
+            ConfigManager.resetDrcConfig(this@MainActivity)
+        }
+
         // ===== 全局 LLM 设置 =====
 
         @JavascriptInterface

@@ -105,9 +105,10 @@ class TtsServer(
         ttsClient = MiniMaxTtsClient(
             rateLimiter = rateLimiter,
             audioCache = audioCache,
-            normalizeModeProvider = { ConfigManager.getNormalizeMode(context) }
+            normalizeModeProvider = { ConfigManager.getNormalizeMode(context) },
+            drcConfigProvider = { ConfigManager.getDrcConfig(context) }
         )
-        Log.i(TAG, "TtsServer init — rate=${rpm}RPM cache=${if (cacheEnabled) "enabled" else "disabled"} max=${cacheMaxEntries} ttl=${cacheTtlDays}d normalize=${ConfigManager.getNormalizeMode(context)}")
+        Log.i(TAG, "TtsServer init — rate=${rpm}RPM cache=${if (cacheEnabled) "enabled" else "disabled"} max=${cacheMaxEntries} ttl=${cacheTtlDays}d normalize=${ConfigManager.getNormalizeMode(context)} drc=${ConfigManager.getDrcConfig(context)}")
     }
 
     override fun serve(session: IHTTPSession): Response {

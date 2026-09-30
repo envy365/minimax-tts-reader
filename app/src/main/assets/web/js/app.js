@@ -10,6 +10,8 @@ function init() {
     loadActiveConfig();
     initTestPrompts();
     loadNormalizeMode();
+    loadDrcConfig();
+    updateDrcAdvancedVisibility();
     try { updateServiceUI(Android.isServiceRunning()); } catch(e) {}
     startLogRefresh();
 }
@@ -778,7 +780,128 @@ function onNormalizeModeChange() {
         var mode = document.getElementById('normalizeModeSelect').value;
         Android.setNormalizeMode(mode);
         Android.showToast('响度模式已切换：' + mode + '（下次合成生效）');
+        // v0.7.4：DRC 模式下显示高级参数面板；切换离开时收起
+        updateDrcAdvancedVisibility();
     } catch (e) {}
+}
+
+// ===== DRC 高级参数（v0.7.4，针对 MiniMax Speech-2.8-HD 调优）=====
+
+// 5 个控件的 DOM id 前缀（threshold / ratio / makeup / attack / release），避免到处拼字符串
+var DRC_FIELD_IDS = ['drcThresholdDb', 'drcRatio', 'drcMakeupGainDb', 'drcAttackMs', 'drcReleaseMs'];
+
+// 收集当前 5 个 slider/val 的数值（parseFloat），返回干净的对象
+function collectDrcConfig() {
+    var cfg = {};
+    for (var i = 0; i < DRC_FIELD_IDS.length; i++) {
+        var id = DRC_FIELD_IDS[i];
+        cfg[fieldIdToKey(id)] = parseFloat(document.getElementById(id).value);
+    }
+    return cfg;
+}
+
+// 'drcThresholdDb' → 'thresholdDb'（去掉 drc 前缀，匹配 ConfigManager.DrcConfig 字段名）
+function fieldIdToKey(id) {
+    var s = id.replace(/^drc/, '');
+    return s.charAt(0).toLowerCase() + s.slice(1);
+}
+
+// 同步 5 个 slider 与对应 val 显示（精度对齐 slider.step）
+function syncDrcDisplay() {
+    for (var i = 0; i < DRC_FIELD_IDS.length; i++) {
+        var id = DRC_FIELD_IDS[i];
+        var slider = document.getElementById(id);
+        var display = document.getElementById(id + 'Val');
+        if (!slider || !display) continue;
+        var step = parseFloat(slider.step);
+        var precision = getStepPrecision(step);
+        var val = parseFloat(slider.value).toFixed(precision);
+        slider.value = val;
+        display.value = val;
+    }
+}
+
+// 实际写入 SharedPreferences（通过 Android.setDrcConfig）。失败时用 toast 兜底。
+function saveDrcConfig() {
+    try {
+        var cfg = collectDrcConfig();
+        Android.setDrcConfig(JSON.stringify(cfg));
+        var status = document.getElementById('drcConfigStatus');
+        if (status) status.textContent = '已自定义当前值（最近一次保存）';
+    } catch (e) {}
+}
+
+// 防抖写入（200ms 节流）。[immediate]=true 时跳过防抖立即写（用于文本框失焦/Enter）。
+var drcSaveTimer = null;
+function onDrcConfigChange(immediate) {
+    syncDrcDisplay();
+    if (immediate) {
+        if (drcSaveTimer) { clearTimeout(drcSaveTimer); drcSaveTimer = null; }
+        saveDrcConfig();
+    } else {
+        if (drcSaveTimer) clearTimeout(drcSaveTimer);
+        drcSaveTimer = setTimeout(saveDrcConfig, 200);
+    }
+}
+
+// 页面初始化时从 Android 拉一次，把 5 个 slider/val 填好
+function loadDrcConfig() {
+    try {
+        var json = Android.getDrcConfig();
+        var cfg = JSON.parse(json);
+        if (!cfg) cfg = {};
+        for (var i = 0; i < DRC_FIELD_IDS.length; i++) {
+            var id = DRC_FIELD_IDS[i];
+            var key = fieldIdToKey(id);
+            var val = cfg[key];
+            if (typeof val !== 'number') continue;
+            var slider = document.getElementById(id);
+            var display = document.getElementById(id + 'Val');
+            if (slider) slider.value = val;
+            if (display) display.value = val;
+        }
+        syncDrcDisplay();  // 精度对齐
+        var status = document.getElementById('drcConfigStatus');
+        if (status) status.textContent = '当前使用系统预置（针对 MiniMax Speech-2.8-HD 调优）';
+    } catch (e) {}
+}
+
+// "恢复默认"按钮：删 pref + 重读
+function resetDrcConfig() {
+    try {
+        Android.resetDrcConfig();
+        loadDrcConfig();
+        try { Android.showToast('已恢复 DRC 系统预置'); } catch (e) {}
+    } catch (e) {}
+}
+
+// 折叠/展开 advanced 内容
+function toggleDrcAdvanced() {
+    var c = document.getElementById('drcAdvancedContent');
+    var b = document.getElementById('drcAdvancedToggle');
+    if (!c || !b) return;
+    if (c.style.display === 'none') {
+        c.style.display = '';
+        b.textContent = '▴ 高级参数（DRC 调优）';
+    } else {
+        c.style.display = 'none';
+        b.textContent = '▾ 高级参数（DRC 调优）';
+    }
+}
+
+// normalizeMode=drc → 显示整块 advanced 面板；其他模式 → 隐藏并折叠
+function updateDrcAdvancedVisibility() {
+    var sel = document.getElementById('normalizeModeSelect');
+    var p = document.getElementById('drcAdvancedPanel');
+    if (!sel || !p) return;
+    var show = sel.value === 'drc';
+    p.style.display = show ? '' : 'none';
+    if (!show) {
+        var c = document.getElementById('drcAdvancedContent');
+        var b = document.getElementById('drcAdvancedToggle');
+        if (c) c.style.display = 'none';
+        if (b) b.textContent = '▾ 高级参数（DRC 调优）';
+    }
 }
 
 // ===== 滑块输入校验 =====
