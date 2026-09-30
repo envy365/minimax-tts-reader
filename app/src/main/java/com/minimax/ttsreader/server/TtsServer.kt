@@ -67,18 +67,14 @@ class TtsServer(
                 "loginUi" to "",
                 "loginUrl" to "",
                 "name" to "MiniMax-TTS",
-                // v0.7.x：URL 模板加 currentToneID / currentEmotionTag / currentSpeakerName 占位
-                // 老 Legado（v3.25 及更早）没有这些变量 → 模板引擎对 undefined 用空字符串 → 服务端 .isNotBlank() 过滤 → 沿用全局 voice
-                // Reading Archive 多角色模式启用时 → 占位替换为 per-segment voice_id → 实现多角色朗读
+                // v0.8.1（Stage 12）：URL 模板去掉 currentToneID / currentEmotionTag / currentSpeakerName 占位
+                // 让 Legado 把我们当单角色 TTS，不再触发 Rimchars Legado 的多角色切分路径
+                // （原设计让 Legado 看到 speakersJson 误认为支持多角色发言人 → Reading Archive
+                // 进入多角色路径 → 给每段打 fallback speaker='精英青年' → 叙述+对话合并切分）
                 "url" to "http://localhost:$port/api/reader/tts" +
-                    "?text={{java.encodeURI(speakText)}}" +
-                    "&voice={{currentToneID || ''}}" +
-                    "&emotion={{currentEmotionTag || ''}}" +
-                    "&speaker={{currentSpeakerName || ''}}",
-                // v0.7.1：speaker 列表 —— Reading Archive 发言人管理 picker 的数据源
-                // 不传这个字段 → picker 永远是空的（用户看到「除了分组名称只有 TTS 服务选项」就是这个原因）
-                // 按 VoiceRegistry.PRESET_VOICES 的 category 分组生成 JSON（参考 httpTTSHelp.md 的格式）
-                "speakersJson" to com.minimax.ttsreader.model.VoiceRegistry.buildSpeakersJsonForLegado()
+                    "?text={{java.encodeURI(speakText)}}"
+                // v0.8.1：移除 speakersJson / emotionsJson 字段（不输出）。
+                // VoiceRegistry.buildSpeakersJsonForLegado / buildEmotionsJsonForLegado 函数保留以备未来恢复。
             )
             // 关键修复：返回数组 [{...}] 而非单对象
             return Gson().toJson(listOf(rule))
